@@ -1,1 +1,53 @@
 DEVELOPMENT_PLAN.md
+
+# Secrets and credentials — NEVER commit these
+.env
+.env.*
+!.env.example
+credentials.json
+token.json
+service_account.json
+*_credentials.json
+*_secret.json
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+pip-log.txt
+
+# Virtual environment
+venv/
+.venv/
+env/
+ENV/
+
+# Scheduler database (runtime state, not source)
+data/scheduler.db
+data/*.db
+
+# Logs (runtime output, not source)
+logs/*.log
+logs/*.log.*
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Test artifacts
+.pytest_cache/
+.coverage
+htmlcov/

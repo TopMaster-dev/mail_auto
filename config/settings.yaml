@@ -1,0 +1,69 @@
+gmail:
+  address: "${GMAIL_ADDRESS}"
+  app_password: "${GMAIL_APP_PASSWORD}"
+  imap_host: imap.gmail.com
+  smtp_host: smtp.gmail.com
+  smtp_port: 587
+  poll_interval_seconds: 300
+
+claude:
+  api_key: "${CLAUDE_API_KEY}"
+  model: claude-sonnet-4-6
+  max_tokens: 600
+
+sheets:
+  service_account_json: "${GOOGLE_SERVICE_ACCOUNT_JSON}"
+  spreadsheet_id: "${SPREADSHEET_ID}"
+  names:
+    inquiries: "問い合わせ一覧"
+    ng_words: "NGワード"
+    templates: "テンプレート"
+    send_log: "送信履歴"
+    followup_log: "追客履歴"
+    review_log: "要確認履歴"
+    config: "設定"
+
+wordpress:
+  base_url: "${WP_BASE_URL}"
+  estate_post_type: estate
+  per_page: 100
+  app_user: "${WP_APP_USER}"
+  app_password: "${WP_APP_PASSWORD}"
+  # ACF field names (confirmed by probing /wp-json/wp/v2/estate)
+  fields:
+    # Vacancy: acf.display_none == "" means the property is listed (vacant)
+    vacancy_status: "display_none"
+    vacancy_available_value: ""       # empty string = available/listed
+    rent: "rent"
+    management_fee: "administrative"  # confirmed: not management_fee
+    area_sqm: "space"                 # confirmed: acf.space = 専有面積㎡
+    walk_minutes: "walktime"          # confirmed: array e.g. ['10','15','20'] — take first
+    layout: "list_of_rooms"           # confirmed: array e.g. ['1LDK']
+    equipment: "equipment"            # confirmed: array e.g. ['オートロック','モニター']
+    commission_free_term: "仲介手数料０円"   # lives in condition2/cat2 taxonomies
+  taxonomies:
+    train_line: "train"
+    area: "area"
+    category: ["condition1", "condition2", "room_category", "cat2"]  # condition1 not condition
+    building_type: "building"
+
+business_hours:
+  start: "10:00"
+  end: "18:00"
+
+send:
+  all_require_confirmation: true   # global safety switch; never set false before full testing
+
+company:
+  name: "レントマガジン株式会社"
+  staff_name: "担当者名"             # replace with actual name
+  tel: "0566-70-7117"
+  fax: "0566-70-7228"
+  email: "contact@rentmagazine.jp"
+  web: "https://rentmagazine.jp"
+  address: "〒472-0012 愛知県知立市八ツ田町1-8-3 YATSUDA APARTMENT 1F"
+  instagram: "https://www.instagram.com/rent_magazine/"
+  discount_url: "https://rentmagazine.jp/campaign1/"
+  mypage_url: "https://rentmagazine.jp/mypage/"
+  line_url: "https://liff.line.me/1660986243-R6pAo4W6?unique_key=DE9fwx&ts=1731193291"
+  tel_reservation: "0566-70-8282"
