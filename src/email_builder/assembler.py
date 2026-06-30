@@ -53,6 +53,21 @@ class EmailAssembler:
         self._co = company
         self._in_hours = is_business_hours
 
+    def build_first_mail_parts(
+        self,
+        inquiry: Inquiry,
+        property_intro: str,
+        visit_invitation: str,
+        alt_intros: list[tuple[Property, str]],
+    ) -> tuple[str, str]:
+        """Return (subject, plain_body). Plain body is what the operator reviews/edits."""
+        subject = f"【{inquiry.inquiry_property_name}】お問い合わせありがとうございます"
+        if inquiry.is_vacant:
+            body = self._vacant_body(inquiry, property_intro, visit_invitation)
+        else:
+            body = self._unavailable_body(inquiry, alt_intros, visit_invitation)
+        return subject, body
+
     def build_first_mail(
         self,
         inquiry: Inquiry,
@@ -61,13 +76,8 @@ class EmailAssembler:
         alt_intros: list[tuple[Property, str]],  # [(Property, AI intro)] for unavailable path
     ) -> tuple[str, str]:
         """Return (subject, html_body)."""
-        subject = f"【{inquiry.inquiry_property_name}】お問い合わせありがとうございます"
-
-        if inquiry.is_vacant:
-            body = self._vacant_body(inquiry, property_intro, visit_invitation)
-        else:
-            body = self._unavailable_body(inquiry, alt_intros, visit_invitation)
-
+        subject, body = self.build_first_mail_parts(
+            inquiry, property_intro, visit_invitation, alt_intros)
         return subject, self._wrap_html(body)
 
     def build_second_mail(self, inquiry: Inquiry, property_intro: str,
@@ -181,7 +191,8 @@ class EmailAssembler:
         ]))
 
     @staticmethod
-    def _wrap_html(text: str) -> str:
+    def wrap_html(text: str) -> str:
+        """Wrap plain text (incl. operator-edited drafts) in the mail HTML shell."""
         escaped = (text
                    .replace("&", "&amp;")
                    .replace("<", "&lt;")
@@ -192,3 +203,6 @@ class EmailAssembler:
             f"{escaped}"
             "</body></html>"
         )
+
+    # backwards-compatible alias
+    _wrap_html = wrap_html

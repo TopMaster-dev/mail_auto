@@ -2,10 +2,11 @@ from __future__ import annotations
 import logging
 import re
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from src.ai.content_checker import ContentChecker
 from src.ai.draft_generator import DraftGenerator
+from src.core.inquiry_filter import InquiryFilter
 from src.core.models import Inquiry, Property
 from src.email_builder.assembler import EmailAssembler
 from src.email_builder.send_gate import (
@@ -45,6 +46,8 @@ class InquiryProcessor:
         scorer: PropertyScorer,
         gate: SendGate,
         company: dict,
+        inquiry_filter: InquiryFilter | None = None,
+        followup_cfg: dict | None = None,
     ):
         self._gmail = gmail
         self._sheets = sheets
@@ -54,6 +57,11 @@ class InquiryProcessor:
         self._scorer = scorer
         self._gate = gate
         self._company = company
+        self._filter = inquiry_filter or InquiryFilter(ignore_senders=[], enabled=False)
+        followup_cfg = followup_cfg or {}
+        self._followup_enabled = followup_cfg.get("enabled", False)
+        steps = followup_cfg.get("steps", [{"days": 2}])
+        self._followup_first_days = int(steps[0]["days"]) if steps else 2
 
     def run_cycle(self) -> None:
         """Called once per poll interval. Processes all unread emails."""
@@ -69,6 +77,8 @@ class InquiryProcessor:
         auto_conditions = self._sheets.read_auto_send_conditions()
 
         for raw in emails:
+            if not self._filter.is_inquiry(raw):
+                continue
             try:
                 self._process_one(raw, auto_conditions)
             except Exception as e:
@@ -118,20 +128,20 @@ class InquiryProcessor:
         if matched is not None:
             self._sheets.update_vacancy(inquiry.id, "あり" if is_vacant else "なし")
 
-        # ── Step 6: AI draft generation ──────────────────────────────────────
+        # ── Step 6: AI draft generation → full assembled email body ──────────
         try:
-            draft, alt_intros = self._build_draft(inquiry)
+            subject, body_plain, body_html = self._build_email(inquiry)
         except RuntimeError as e:
             logger.error("Draft generation failed for %s: %s", inquiry.id, e)
             self._sheets.update_status(inquiry.id, "要確認")
             self._sheets.write_review_log(inquiry.id, "AI生成エラー", "")
             return
 
-        inquiry.ai_draft = draft
-        self._sheets.update_draft(inquiry.id, draft)
+        inquiry.ai_draft = body_plain
+        self._sheets.update_draft(inquiry.id, body_plain)
 
-        # ── Step 7: check AI-generated draft ────────────────────────────────
-        draft_check = self._checker.check(draft)
+        # ── Step 7: check the assembled draft ────────────────────────────────
+        draft_check = self._checker.check(body_plain)
         if not draft_check.is_clean:
             inquiry.discriminatory_flag = draft_check.discriminatory
             self._sheets.update_status(inquiry.id, "NG検出")
@@ -156,20 +166,17 @@ class InquiryProcessor:
             logger.info("Inquiry %s → 自動送信可 (awaiting confirmation)", inquiry.id)
 
         elif gate_result == GATE_AUTO:
-            in_hours = is_business_hours()
-            assembler = EmailAssembler(self._company, in_hours)
-            subject, html = assembler.build_first_mail(
-                inquiry, draft, self._generator.generate_visit_invitation(inquiry.raw_body),
-                alt_intros
-            )
             try:
-                sent_mid = self._gmail.send(inquiry.customer_email, subject, html,
+                sent_mid = self._gmail.send(inquiry.customer_email, subject, body_html,
                                             inquiry.message_id)
                 inquiry.sent_at = datetime.now()
                 inquiry.send_message_id = sent_mid
                 self._sheets.mark_sent(inquiry.id, sent_mid)
                 self._sheets.write_send_log(inquiry.id, inquiry.customer_email,
                                             subject, sent_mid, "1st")
+                if self._followup_enabled:
+                    next_at = datetime.now() + timedelta(days=self._followup_first_days)
+                    self._sheets.schedule_followup(inquiry.id, next_at, count=1)
                 logger.info("Auto-sent 1st mail for inquiry %s", inquiry.id)
             except Exception as e:
                 logger.error("SMTP send failed for %s: %s", inquiry.id, e)
@@ -227,34 +234,32 @@ class InquiryProcessor:
 
         return prop, prop.is_vacant
 
-    def _build_draft(
-        self, inquiry: Inquiry
-    ) -> tuple[str, list[tuple[Property, str]]]:
+    def _build_email(self, inquiry: Inquiry) -> tuple[str, str, str]:
         """
-        Returns (draft_text_for_ng_check, alt_intros_list).
-        draft_text is the full assembled mail text (plain) used for NG scanning.
+        Generate AI segments and assemble the full first mail.
+        Returns (subject, plain_body, html_body). The plain body is stored as the
+        operator-reviewable draft and is what the NG check scans.
         """
+        invitation = self._generator.generate_visit_invitation(inquiry.raw_body)
         alt_intros: list[tuple[Property, str]] = []
 
         if inquiry.is_vacant and inquiry.matched_property:
-            prop_intro = self._generator.generate_property_intro(inquiry.matched_property)
-            draft = prop_intro
+            intro = self._generator.generate_property_intro(inquiry.matched_property)
         else:
-            alts = self._scorer.find_alternatives(
-                inquiry.matched_property or Property(
-                    wp_id=0, name="", url="", rent=0, management_fee=0,
-                    layout="", nearest_station="", train_line="", city="",
-                    walk_minutes=0, category=[], equipment=[],
-                    is_vacant=False, is_commission_free=False,
-                    area_sqm=0.0, building_type="",
-                ),
-                top_n=3,
+            intro = ""
+            base = inquiry.matched_property or Property(
+                wp_id=0, name="", url="", rent=0, management_fee=0,
+                layout="", nearest_station="", train_line="", city="",
+                walk_minutes=0, category=[], equipment=[],
+                is_vacant=False, is_commission_free=False,
+                area_sqm=0.0, building_type="",
             )
-            for alt in alts:
+            for alt in self._scorer.find_alternatives(base, top_n=3):
                 alt_text = self._generator.generate_alt_intro(
-                    inquiry.matched_property or alt, alt
-                )
+                    inquiry.matched_property or alt, alt)
                 alt_intros.append((alt, alt_text))
-            draft = " ".join(text for _, text in alt_intros)
 
-        return draft, alt_intros
+        assembler = EmailAssembler(self._company, is_business_hours())
+        subject, body_plain = assembler.build_first_mail_parts(
+            inquiry, intro, invitation, alt_intros)
+        return subject, body_plain, assembler.wrap_html(body_plain)

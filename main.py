@@ -87,15 +87,20 @@ def _validate_config(cfg: dict) -> None:
 
 
 def build_processor(cfg: dict):
-    """Instantiate and wire all components."""
+    """Instantiate and wire all components.
+
+    Returns (processor, poll_interval_seconds, followup_scheduler_or_None).
+    """
     from src.ai.content_checker import ContentChecker
     from src.ai.draft_generator import DraftGenerator
+    from src.core.inquiry_filter import InquiryFilter
     from src.core.inquiry_processor import InquiryProcessor
     from src.email_builder.send_gate import SendGate
     from src.integrations.gmail_client import GmailClient
     from src.integrations.sheets_client import SheetsClient
     from src.integrations.wp_client import WordPressClient
     from src.matching.property_scorer import PropertyScorer
+    from src.scheduling.followup_scheduler import FollowupScheduler
 
     gmail = GmailClient(
         address=cfg["gmail"]["address"],
@@ -142,7 +147,15 @@ def build_processor(cfg: dict):
         global_require_confirmation=cfg["send"]["all_require_confirmation"],
     )
 
-    return InquiryProcessor(
+    filter_cfg = cfg.get("inbox_filter", {})
+    inquiry_filter = InquiryFilter(
+        ignore_senders=filter_cfg.get("ignore_senders", []),
+        enabled=filter_cfg.get("enabled", True),
+        require_property_signal=filter_cfg.get("require_property_signal", False),
+    )
+
+    followup_cfg = cfg.get("followup", {})
+    processor = InquiryProcessor(
         gmail=gmail,
         sheets=sheets,
         wp=wp,
@@ -151,7 +164,18 @@ def build_processor(cfg: dict):
         scorer=scorer,
         gate=gate,
         company=cfg["company"],
-    ), cfg["gmail"]["poll_interval_seconds"]
+        inquiry_filter=inquiry_filter,
+        followup_cfg=followup_cfg,
+    )
+
+    scheduler = None
+    if followup_cfg.get("enabled", False):
+        scheduler = FollowupScheduler(
+            sheets=sheets, gmail=gmail, wp=wp, generator=generator,
+            scorer=scorer, company=cfg["company"], cfg=followup_cfg,
+        )
+
+    return processor, cfg["gmail"]["poll_interval_seconds"], scheduler
 
 
 def probe_wordpress(cfg: dict) -> None:
@@ -206,7 +230,7 @@ def main() -> None:
         probe_wordpress(cfg)
         return
 
-    processor, interval = build_processor(cfg)
+    processor, interval, scheduler = build_processor(cfg)
 
     if args.once:
         logger.info("Running single poll cycle (--once mode)")
@@ -224,14 +248,21 @@ def main() -> None:
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT, _shutdown)
 
+    if scheduler:
+        scheduler.start()
+
     logger.info("Mail automation started. Poll interval: %ds", interval)
-    while running:
-        try:
-            processor.run_cycle()
-        except Exception as e:
-            logger.exception("Unexpected error in poll cycle: %s", e)
-        if running:
-            time.sleep(interval)
+    try:
+        while running:
+            try:
+                processor.run_cycle()
+            except Exception as e:
+                logger.exception("Unexpected error in poll cycle: %s", e)
+            if running:
+                time.sleep(interval)
+    finally:
+        if scheduler:
+            scheduler.shutdown()
 
     logger.info("Mail automation stopped")
 

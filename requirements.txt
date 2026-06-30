@@ -4,6 +4,7 @@ google-auth>=2.0.0
 imap-tools>=1.5.0
 flask>=3.0.0
 flask-login>=0.6.0
+gunicorn>=21.0.0
 apscheduler>=3.10.0
 sqlalchemy>=2.0.0
 pandas>=2.0.0

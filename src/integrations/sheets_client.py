@@ -17,12 +17,14 @@ _SCOPES = [
 ]
 
 # ── row positions (1-indexed, row 1 = header) ──────────────────────────────
-_VACANCY_COL = 7     # "空室有無"
-_STATUS_COL = 8      # Inquiries sheet "ステータス" column index (0-based = 7)
-_DRAFT_COL = 9       # "AI返信文案"
-_SENT_COL = 16       # "送信日時"
-_FOLLOWUP_COL = 14   # "追客ステータス"
-_MEMO_COL = 18       # "担当者メモ"
+_VACANCY_COL = 7        # "空室有無"
+_STATUS_COL = 8         # "ステータス"
+_DRAFT_COL = 9          # "AI返信文案"
+_FOLLOWUP_COL = 14      # "追客ステータス"
+_NEXT_FOLLOWUP_COL = 15 # "次回追客予定日"
+_SENT_COL = 16          # "送信日時"
+_FOLLOWUP_COUNT_COL = 17  # "追客回数"
+_MEMO_COL = 18          # "担当者メモ"
 
 
 class SheetsClient:
@@ -148,3 +150,65 @@ class SheetsClient:
             return None
         ids = self._retry(lambda: ws.col_values(2))
         return ids[row_idx] if row_idx < len(ids) else None
+
+    # ── inquiry reads (admin panel + scheduler) ──────────────────────────────
+
+    def read_inquiries(self) -> list[dict]:
+        """Return all inquiry rows as dicts (keys = headers)."""
+        ws = self._ws("inquiries")
+        return self._retry(lambda: ws.get_all_records())
+
+    def get_inquiry(self, inquiry_id: str) -> dict | None:
+        for rec in self.read_inquiries():
+            if str(rec.get("ID", "")).strip() == inquiry_id:
+                return rec
+        return None
+
+    def set_draft(self, inquiry_id: str, draft: str) -> None:
+        self.update_inquiry_field(inquiry_id, _DRAFT_COL, draft)
+
+    def set_memo(self, inquiry_id: str, memo: str) -> None:
+        self.update_inquiry_field(inquiry_id, _MEMO_COL, memo)
+
+    # ── follow-up scheduling ─────────────────────────────────────────────────
+
+    def schedule_followup(self, inquiry_id: str, next_at: datetime, count: int) -> None:
+        """Record the next follow-up due time and current follow-up count."""
+        self.update_inquiry_field(inquiry_id, _NEXT_FOLLOWUP_COL,
+                                  next_at.strftime("%Y-%m-%d %H:%M:%S"))
+        self.update_inquiry_field(inquiry_id, _FOLLOWUP_COUNT_COL, count)
+        self.update_inquiry_field(inquiry_id, _FOLLOWUP_COL, "追客中")
+
+    def advance_followup(self, inquiry_id: str, count: int,
+                         next_at: datetime | None, status: str) -> None:
+        """After a follow-up mail is sent: bump count, set next due (or clear), set status."""
+        self.update_inquiry_field(inquiry_id, _FOLLOWUP_COUNT_COL, count)
+        self.update_inquiry_field(
+            inquiry_id, _NEXT_FOLLOWUP_COL,
+            next_at.strftime("%Y-%m-%d %H:%M:%S") if next_at else "")
+        self.update_inquiry_field(inquiry_id, _FOLLOWUP_COL, status)
+
+    def read_followup_candidates(self, now: datetime) -> list[dict]:
+        """Return inquiry rows whose follow-up is due (追客中 and 次回追客予定日 <= now)."""
+        due: list[dict] = []
+        for rec in self.read_inquiries():
+            if str(rec.get("追客ステータス", "")).strip() != "追客中":
+                continue
+            nxt = str(rec.get("次回追客予定日", "")).strip()
+            if not nxt:
+                continue
+            parsed = None
+            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+                try:
+                    parsed = datetime.strptime(nxt, fmt)
+                    break
+                except ValueError:
+                    continue
+            if parsed and parsed <= now:
+                due.append(rec)
+        return due
+
+    def write_followup_log(self, inquiry_id: str, mail_type: str, result: str) -> None:
+        ws = self._ws("followup_log")
+        row = [datetime.now().strftime("%Y-%m-%d %H:%M:%S"), inquiry_id, mail_type, result]
+        self._retry(lambda: ws.append_row(row, value_input_option="RAW"))

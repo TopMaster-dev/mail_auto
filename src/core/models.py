@@ -109,3 +109,45 @@ class Inquiry:
             "追客ステータス", "次回追客予定日", "送信日時",
             "追客回数", "担当者メモ",
         ]
+
+    @classmethod
+    def from_sheets_record(cls, rec: dict) -> "Inquiry":
+        """Reconstruct an Inquiry from a get_all_records() row (keys = headers).
+
+        Used by the follow-up scheduler and the admin panel. Property objects are
+        not restored here — callers re-resolve them from WordPress when needed.
+        """
+        def _dt(val):
+            val = str(val or "").strip()
+            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y/%m/%d %H:%M:%S"):
+                try:
+                    return datetime.strptime(val, fmt)
+                except ValueError:
+                    continue
+            return None
+
+        vac = str(rec.get("空室有無", "")).strip()
+        is_vacant = True if vac == "あり" else (False if vac == "なし" else None)
+
+        try:
+            followup_count = int(str(rec.get("追客回数", 0) or 0))
+        except ValueError:
+            followup_count = 0
+
+        return cls(
+            id=str(rec.get("ID", "")).strip(),
+            received_at=_dt(rec.get("受信日時")) or datetime.now(),
+            customer_name=str(rec.get("顧客名", "")).strip(),
+            customer_email=str(rec.get("メールアドレス", "")).strip(),
+            inquiry_property_name=str(rec.get("問い合わせ物件", "")).strip(),
+            inquiry_property_url=str(rec.get("物件URL", "")).strip(),
+            raw_body="",
+            status=str(rec.get("ステータス", "")).strip(),
+            is_vacant=is_vacant,
+            ai_draft=str(rec.get("AI返信文案", "")),
+            followup_status=str(rec.get("追客ステータス", "")).strip() or "追客中",
+            next_followup_at=_dt(rec.get("次回追客予定日")),
+            sent_at=_dt(rec.get("送信日時")),
+            followup_count=followup_count,
+            staff_memo=str(rec.get("担当者メモ", "")),
+        )

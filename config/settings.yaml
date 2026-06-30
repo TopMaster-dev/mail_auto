@@ -54,6 +54,45 @@ business_hours:
 send:
   all_require_confirmation: true   # global safety switch; never set false before full testing
 
+# ── Phase 2 ──────────────────────────────────────────────────────────────────
+followup:
+  enabled: true
+  scan_interval_minutes: 30        # how often the scheduler scans for due follow-ups
+  # Follow-up state lives in the spreadsheet (追客ステータス/次回追客予定日/追客回数),
+  # so the scan is stateless and resumes safely after a restart.
+  steps:                           # days after the previous mail before each follow-up
+    - days: 2                      # 2nd mail, 2 days after the 1st
+    - days: 3                      # 3rd mail, 3 days after the 2nd
+  max_followups: 2                 # 2nd and 3rd mail (the 1st mail is the initial reply)
+
+inbox_filter:
+  enabled: true
+  # When true, only process mail that references a property (rentmagazine.jp URL or
+  # 物件/内見/問い合わせ keywords). Stronger noise filter; enable if the inbox receives
+  # many notifications. Default false processes all non-denylisted mail.
+  require_property_signal: false
+  # Sender fragments that are never customer inquiries (notifications, portals).
+  ignore_senders:
+    - "noreply@"
+    - "no-reply@"
+    - "no-reply-"
+    - "lancers.co.jp"
+    - "zehitomo.com"
+    - "indeedemail.com"
+    - "indeed.com"
+    - "accounts.google.com"
+    - "mail.anthropic.com"
+    - "hekikai-takken.gr.jp"
+
+admin:
+  host: "0.0.0.0"
+  port: 5000
+  session_lifetime_minutes: 120
+  behind_proxy: false               # set true when served behind nginx/TLS
+  password_hash: "${ADMIN_PASSWORD_HASH}"
+  secret_key: "${FLASK_SECRET_KEY}"
+  allowed_ips: "${ADMIN_ALLOWED_IPS}"   # comma-separated CIDRs; empty = allow all
+
 company:
   name: "レントマガジン株式会社"
   staff_name: "担当者名"             # replace with actual name

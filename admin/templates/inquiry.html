@@ -1,0 +1,68 @@
+{% extends "base.html" %}
+{% block title %}問い合わせ詳細{% endblock %}
+{% block content %}
+
+<a href="{{ url_for('dashboard') }}" class="btn btn-sm btn-outline-secondary mb-3">← 一覧へ戻る</a>
+
+<div class="row g-3">
+  <!-- left: inquiry info -->
+  <div class="col-md-4">
+    <div class="card shadow-sm">
+      <div class="card-header">お問い合わせ情報</div>
+      <div class="card-body small">
+        <dl class="row mb-0">
+          <dt class="col-5">受信日時</dt><dd class="col-7">{{ rec.get('受信日時') }}</dd>
+          <dt class="col-5">顧客名</dt><dd class="col-7">{{ rec.get('顧客名') }}</dd>
+          <dt class="col-5">メール</dt><dd class="col-7">{{ rec.get('メールアドレス') }}</dd>
+          <dt class="col-5">物件</dt><dd class="col-7">{{ rec.get('問い合わせ物件') }}</dd>
+          <dt class="col-5">空室有無</dt><dd class="col-7">{{ rec.get('空室有無') }}</dd>
+          <dt class="col-5">ステータス</dt><dd class="col-7">{{ rec.get('ステータス') }}</dd>
+          <dt class="col-5">自動送信可否</dt><dd class="col-7">{{ rec.get('自動送信可否') }}</dd>
+          <dt class="col-5">NGワード</dt><dd class="col-7">{{ rec.get('NGワード') or '—' }}</dd>
+          <dt class="col-5">追客状況</dt><dd class="col-7">{{ rec.get('追客ステータス') }} ({{ rec.get('追客回数') or 0 }})</dd>
+          <dt class="col-5">次回追客</dt><dd class="col-7">{{ rec.get('次回追客予定日') or '—' }}</dd>
+        </dl>
+        {% if rec.get('物件URL') %}
+        <a href="{{ rec.get('物件URL') }}" target="_blank" class="btn btn-sm btn-outline-info mt-2 w-100">物件ページを開く</a>
+        {% endif %}
+      </div>
+    </div>
+
+    <form method="post" action="{{ url_for('stop_followup', iid=rec.get('ID')) }}" class="mt-3"
+          onsubmit="return confirm('この問い合わせの追客を停止しますか？');">
+      <button type="submit" class="btn btn-outline-warning w-100">追客を停止する</button>
+    </form>
+  </div>
+
+  <!-- right: draft editor -->
+  <div class="col-md-8">
+    <div class="card shadow-sm">
+      <div class="card-header d-flex justify-content-between">
+        <span>返信文案（編集可）</span>
+      </div>
+      <div class="card-body">
+        <form method="post" action="{{ url_for('send_inquiry', iid=rec.get('ID')) }}"
+              onsubmit="return confirm('この内容で顧客へメールを送信します。よろしいですか？');">
+          <div class="mb-2">
+            <label class="form-label small">件名</label>
+            <input type="text" name="subject" class="form-control" value="{{ subject }}">
+          </div>
+          <div class="mb-2">
+            <label class="form-label small">本文</label>
+            <textarea name="body" class="form-control" rows="20" style="font-family:monospace;">{{ rec.get('AI返信文案') }}</textarea>
+          </div>
+          <div class="mb-3">
+            <label class="form-label small">担当者メモ</label>
+            <input type="text" name="memo" class="form-control" value="{{ rec.get('担当者メモ') }}">
+          </div>
+          <div class="d-flex gap-2">
+            <button type="submit" formaction="{{ url_for('save_inquiry', iid=rec.get('ID')) }}"
+                    formnovalidate class="btn btn-outline-secondary">下書き保存</button>
+            <button type="submit" class="btn btn-primary">この内容で送信</button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

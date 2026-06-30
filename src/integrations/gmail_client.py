@@ -67,6 +67,7 @@ class GmailClient:
             "subject": msg.subject or "",
             "body": unicodedata.normalize("NFKC", body),
             "date": msg.date,
+            "headers_present": list((msg.headers or {}).keys()),
         }
 
     # ── send ─────────────────────────────────────────────────────────────────
