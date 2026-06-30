@@ -17,6 +17,7 @@ _SCOPES = [
 ]
 
 # ── row positions (1-indexed, row 1 = header) ──────────────────────────────
+_VACANCY_COL = 7     # "空室有無"
 _STATUS_COL = 8      # Inquiries sheet "ステータス" column index (0-based = 7)
 _DRAFT_COL = 9       # "AI返信文案"
 _SENT_COL = 16       # "送信日時"
@@ -80,6 +81,10 @@ class SheetsClient:
     def update_status(self, inquiry_id: str, status: str) -> None:
         self.update_inquiry_field(inquiry_id, _STATUS_COL, status)
         logger.info("Status → %s for %s", status, inquiry_id)
+
+    def update_vacancy(self, inquiry_id: str, label: str) -> None:
+        """Reflect looked-up vacancy (initial row is written before lookup)."""
+        self.update_inquiry_field(inquiry_id, _VACANCY_COL, label)
 
     def update_draft(self, inquiry_id: str, draft: str) -> None:
         self.update_inquiry_field(inquiry_id, _DRAFT_COL, draft)

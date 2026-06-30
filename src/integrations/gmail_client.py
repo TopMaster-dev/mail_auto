@@ -44,7 +44,12 @@ class GmailClient:
         results: list[dict] = []
         with MailBox(self._imap_host).login(self._address, self._password) as mb:
             for msg in mb.fetch(AND(seen=False), mark_seen=True, bulk=True):
-                results.append(self._parse(msg))
+                try:
+                    results.append(self._parse(msg))
+                except Exception as e:
+                    # One malformed message must not abort the whole batch
+                    # (the batch is already marked seen, so aborting loses all of it).
+                    logger.error("Failed to parse message uid=%s: %s", msg.uid, e)
         logger.info("Fetched %d unread emails", len(results))
         return results
 
@@ -52,12 +57,13 @@ class GmailClient:
         body = msg.text or ""
         if not body and msg.html:
             body = msg.html
+        from_name = (msg.from_values.name if msg.from_values else "") or ""
         return {
             "uid": msg.uid,
             "message_id": (msg.headers.get("message-id") or [""])[0].strip(),
             "in_reply_to": (msg.headers.get("in-reply-to") or [""])[0].strip(),
             "from_addr": msg.from_ or "",
-            "from_name": (msg.from_values.name or "").strip(),
+            "from_name": from_name.strip(),
             "subject": msg.subject or "",
             "body": unicodedata.normalize("NFKC", body),
             "date": msg.date,

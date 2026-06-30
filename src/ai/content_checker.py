@@ -1,6 +1,7 @@
 from __future__ import annotations
 import json
 import logging
+import re
 import unicodedata
 
 from anthropic import Anthropic
@@ -8,6 +9,21 @@ from anthropic import Anthropic
 from src.core.models import CheckResult, NGHit
 
 logger = logging.getLogger(__name__)
+
+_CODE_FENCE = re.compile(r"^```(?:json)?\s*|\s*```$")
+_JSON_OBJECT = re.compile(r"\{.*\}", re.DOTALL)
+
+
+def _parse_json_lenient(raw: str) -> dict:
+    """Parse JSON from a model reply that may wrap it in prose or a code fence."""
+    cleaned = _CODE_FENCE.sub("", raw.strip())
+    try:
+        return json.loads(cleaned)
+    except json.JSONDecodeError:
+        m = _JSON_OBJECT.search(cleaned)
+        if m:
+            return json.loads(m.group(0))
+        raise
 
 _DISC_SYSTEM = "あなたは不動産業務の法令遵守チェッカーです。指定されたJSON形式のみで回答してください。"
 
@@ -94,12 +110,12 @@ class ContentChecker:
             try:
                 resp = self._client.messages.create(
                     model=self._model,
-                    max_tokens=80,
+                    max_tokens=150,
                     system=_DISC_SYSTEM,
                     messages=[{"role": "user", "content": prompt}],
                 )
                 raw = resp.content[0].text.strip()
-                result = json.loads(raw)
+                result = _parse_json_lenient(raw)
                 disc = bool(result.get("discriminatory", False))
                 reason = str(result.get("reason", ""))
                 if disc:

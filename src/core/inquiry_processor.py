@@ -19,8 +19,13 @@ from src.matching.property_scorer import PropertyScorer
 logger = logging.getLogger(__name__)
 
 _PROP_URL_PATTERN = re.compile(r"https?://rentmagazine\.jp/\S+")
+# Property name in Japanese/ASCII quotes — the most common way customers refer
+# to a listing, e.g. 「都市生活を楽しみたい方に」の物件を内見希望です。
+_PROP_QUOTED_PATTERN = re.compile(r"[「『\"”]([^「」『』\"”\n\r]{2,40})[」』\"”]")
+# Labelled name with an explicit separator (portal/forwarded formats).
+# Requires a real separator after the label so it can't grab "について" from "物件について".
 _PROP_NAME_PATTERN = re.compile(
-    r"(?:物件名?|お問い合わせ物件|問い合わせ物件)[：:　\s]*([^\n\r]{2,40})"
+    r"(?:物件名|お問い合わせ物件|問い合わせ物件|ご希望物件)[：:　][\s]*([^\n\r「」]{2,40})"
 )
 
 
@@ -109,6 +114,9 @@ class InquiryProcessor:
         matched, is_vacant = self._lookup_property(inquiry)
         inquiry.matched_property = matched
         inquiry.is_vacant = is_vacant
+        # Initial row was written before lookup — update 空室有無 once we know it
+        if matched is not None:
+            self._sheets.update_vacancy(inquiry.id, "あり" if is_vacant else "なし")
 
         # ── Step 6: AI draft generation ──────────────────────────────────────
         try:
@@ -173,23 +181,25 @@ class InquiryProcessor:
         body = raw.get("body", "")
         name = raw.get("from_name") or raw.get("from_addr", "").split("@")[0]
 
-        # Try to extract property name from body
-        prop_name = ""
-        m = _PROP_NAME_PATTERN.search(body)
-        if m:
-            prop_name = m.group(1).strip()
-
-        # Try to extract property URL from body
+        # Try to extract property URL from body (most reliable identifier)
         prop_url = ""
         urls = _PROP_URL_PATTERN.findall(body)
         if urls:
             prop_url = urls[0]
 
-        # Fallback: use email subject
+        # Property name: quoted name first, then labelled name, then subject
+        prop_name = ""
+        m = _PROP_QUOTED_PATTERN.search(body)
+        if m:
+            prop_name = m.group(1).strip()
+        if not prop_name:
+            m = _PROP_NAME_PATTERN.search(body)
+            if m:
+                prop_name = m.group(1).strip()
         if not prop_name:
             subj = raw.get("subject", "")
             bracket = re.search(r"[【\[](.+?)[】\]]", subj)
-            prop_name = bracket.group(1) if bracket else subj
+            prop_name = (bracket.group(1) if bracket else subj).strip()
 
         return Inquiry(
             id=str(uuid.uuid4()),
