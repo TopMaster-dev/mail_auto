@@ -9,6 +9,7 @@ Usage:
 from __future__ import annotations
 import argparse
 import logging
+import logging.handlers
 import os
 import signal
 import sys
@@ -39,7 +40,6 @@ logging.basicConfig(
     ],
 )
 
-import logging.handlers  # noqa: E402  (needed after basicConfig)
 logger = logging.getLogger(__name__)
 
 

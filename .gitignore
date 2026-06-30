@@ -51,3 +51,5 @@ desktop.ini
 .pytest_cache/
 .coverage
 htmlcov/
+
+JSONファイル.txt
