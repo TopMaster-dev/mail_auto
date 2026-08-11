@@ -520,15 +520,22 @@ feat: discriminatory expression context checker via Claude API
 
 ### 実装内容
 
-プロンプトキャッシュ設計 — 会社情報は**キャッシュブロック**に置き、
-毎回送信するプロンプト部分のAPI費用を30〜60%削減します。
+**プロンプトキャッシュは採用しません（計測のうえ不採用）。**
+`claude-sonnet-4-6` のキャッシュ最小サイズは 1,024 トークンですが、共通の
+システムプロンプトは 214 トークンしかなく、`cache_control` を付けても
+キャッシュは一切作成されません（エラーにもならず、無言で無効になります）。
+3つのプロンプトテンプレートをシステム側へ移せば 1,293 トークンで最小サイズは
+超えますが、その場合は毎回3つ分を送信することになり、損益分岐は
+「5分以内に約4.5回の呼び出し」。実際は1問い合わせあたり2回（空室あり）〜
+4回（代替物件提案）のため、両パターンとも**かえって割高**になります。
+1問い合わせあたりの呼び出し回数が増えた場合は再計測してください。
 
 **`src/ai/draft_generator.py`**:
 ```python
 from anthropic import Anthropic
 import json
 
-SYSTEM_CACHED = """
+SYSTEM_PROMPT = """
 あなたはレントマガジン株式会社の賃貸物件担当者です。
 以下の制約を厳守してください：
 
@@ -592,17 +599,16 @@ JSON形式: {{"sentence": "生成した一言"}}
         return self._call(prompt)["sentence"]
 
     def _call(self, user_prompt: str) -> dict:
-        """プロンプトキャッシュ付きAPIコール。JSON解析失敗は3回リトライ"""
+        """APIコール。JSON解析失敗は3回リトライ（キャッシュは不採用・上記参照）"""
+        strictness = ""
         for attempt in range(3):
             resp = self._client.messages.create(
                 model=self._model,
                 max_tokens=300,
-                system=[{
-                    "type": "text",
-                    "text": SYSTEM_CACHED,
-                    "cache_control": {"type": "ephemeral"},  # プロンプトキャッシュ
-                }],
-                messages=[{"role": "user", "content": user_prompt}],
+                system=SYSTEM_PROMPT,
+                # リトライ時の追加指示はユーザー側に付ける
+                # （システム側に足すと共通プレフィックスが毎回変わるため）
+                messages=[{"role": "user", "content": user_prompt + strictness}],
             )
             try:
                 return json.loads(resp.content[0].text)
@@ -615,12 +621,13 @@ JSON形式: {{"sentence": "生成した一言"}}
 ### Gitコミット（2件）
 
 ```
-feat: Claude API client with prompt caching for system context
+feat: Claude API client with retry and strict JSON parsing
 
-- Anthropic SDK with cache_control: ephemeral on system prompt
-- Retry loop (3 attempts) with stricter JSON instruction on failure
+- Anthropic SDK with a shared system prompt (no caching — see note above)
+- Retry loop (3 attempts) with a stricter JSON instruction on failure,
+  added to the user turn so the shared prefix is not rewritten
 - Third failure raises exception → caller sets status to 要確認
-- Token usage and cache hit/miss logged per call
+- Token usage logged per call
 ```
 
 ```

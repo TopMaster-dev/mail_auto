@@ -89,37 +89,48 @@ class DraftGenerator:
 
     # ── internal ─────────────────────────────────────────────────────────────
 
+    @staticmethod
+    def _strip_fence(raw: str) -> str:
+        """Claude occasionally wraps the JSON in a markdown code fence."""
+        if not raw.startswith("```"):
+            return raw
+        body = raw.split("```")[1]
+        return body[4:] if body.startswith("json") else body
+
     def _call(self, user_prompt: str, key: str) -> str:
         """
-        Call Claude with prompt caching on the system prompt.
-        Retries up to 3 times with progressively stricter format instructions.
-        On third failure raises RuntimeError → caller sets status to 要確認.
+        Call Claude and return the single JSON field the caller asked for.
+        Retries up to 3 times with a stricter format instruction.
+        On the third failure raises RuntimeError → caller sets status to 要確認.
+
+        Deliberately no prompt caching. This system block is 214 tokens against
+        a 1024-token minimum for claude-sonnet-4-6, so the `cache_control` that
+        used to sit here never cached anything. Hoisting all three prompt
+        templates into the system block does clear the minimum (1293 tokens),
+        but then every call carries all three and break-even is ~4.5 cached
+        calls inside the 5-minute TTL — measured worse on both real paths
+        (2 calls when the property is vacant, 4 when suggesting alternatives).
+        Worth re-measuring if the number of calls per inquiry grows.
         """
-        extra = ""
+        strictness = ""
+        last_raw = ""
         for attempt in range(3):
             try:
                 resp = self._client.messages.create(
                     model=self._model,
                     max_tokens=self._max_tokens,
-                    system=[{
-                        "type": "text",
-                        "text": _SYSTEM + extra,
-                        "cache_control": {"type": "ephemeral"},
-                    }],
-                    messages=[{"role": "user", "content": user_prompt}],
+                    system=_SYSTEM,
+                    # The retry instruction goes in the user turn: appending it
+                    # to the system block would rewrite the shared prefix.
+                    messages=[{"role": "user", "content": user_prompt + strictness}],
                 )
-                raw = resp.content[0].text.strip()
-                # Claude sometimes wraps in markdown code blocks
-                if raw.startswith("```"):
-                    raw = raw.split("```")[1]
-                    if raw.startswith("json"):
-                        raw = raw[4:]
-                data = json.loads(raw)
+                last_raw = resp.content[0].text.strip()
+                data = json.loads(self._strip_fence(last_raw))
                 return str(data.get(key, "")).strip()
             except json.JSONDecodeError:
                 logger.warning("Draft generation attempt %d: JSON parse error. Raw: %s",
-                               attempt + 1, resp.content[0].text[:100] if 'resp' in dir() else "")
-                extra = "\n必ずJSONのみを出力してください。説明文・マークダウンは禁止。"
+                               attempt + 1, last_raw[:100])
+                strictness = "\n\n必ずJSONのみを出力してください。説明文・マークダウンは禁止。"
             except Exception as e:
                 logger.warning("Draft generation attempt %d error: %s", attempt + 1, e)
 

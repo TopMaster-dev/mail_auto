@@ -48,6 +48,46 @@ class TestPropertyIntro(unittest.TestCase):
             gen.generate_property_intro(_prop())
 
 
+class TestRequestShape(unittest.TestCase):
+    """The shared prefix must stay byte-identical across retries."""
+
+    def _client_returning(self, *texts):
+        client = MagicMock()
+        client.messages.create.side_effect = [
+            MagicMock(content=[MagicMock(text=t)]) for t in texts]
+        return client
+
+    def test_system_is_a_plain_string(self):
+        # A list-of-blocks with cache_control cached nothing at this prompt size;
+        # see the note in DraftGenerator._call.
+        client = self._client_returning('{"intro": "ok"}')
+        DraftGenerator(client=client, model="x").generate_property_intro(_prop())
+        self.assertIsInstance(client.messages.create.call_args.kwargs["system"], str)
+
+    def test_retry_instruction_goes_to_the_user_turn(self):
+        client = self._client_returning("not json", '{"intro": "ok"}')
+        result = DraftGenerator(client=client, model="x").generate_property_intro(_prop())
+        self.assertEqual(result, "ok")
+
+        first, second = client.messages.create.call_args_list
+        # System prompt unchanged between attempts...
+        self.assertEqual(first.kwargs["system"], second.kwargs["system"])
+        # ...and the stricter instruction landed in the user message instead.
+        first_user = first.kwargs["messages"][0]["content"]
+        second_user = second.kwargs["messages"][0]["content"]
+        self.assertNotEqual(first_user, second_user)
+        self.assertIn("必ずJSONのみ", second_user)
+
+    def test_empty_response_content_is_retried_not_crashed(self):
+        client = MagicMock()
+        client.messages.create.side_effect = [
+            MagicMock(content=[]),                          # refusal / truncation
+            MagicMock(content=[MagicMock(text='{"intro": "recovered"}')]),
+        ]
+        result = DraftGenerator(client=client, model="x").generate_property_intro(_prop())
+        self.assertEqual(result, "recovered")
+
+
 class TestAltPropertyIntro(unittest.TestCase):
     def test_returns_intro_text(self):
         gen = _make_generator('{"intro": "こちらもいかがでしょうか。"}')
