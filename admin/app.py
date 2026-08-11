@@ -20,6 +20,7 @@ from flask import (
 from flask_login import (
     LoginManager, UserMixin, current_user, login_required, login_user, logout_user,
 )
+from flask_wtf.csrf import CSRFError, CSRFProtect
 from werkzeug.exceptions import HTTPException
 
 from src.config_loader import load_config
@@ -51,7 +52,12 @@ def _parse_networks(allowed: str) -> list:
     return nets
 
 
-def create_app(cfg: dict | None = None) -> Flask:
+def create_app(cfg: dict | None = None, *, sheets=None, gmail=None) -> Flask:
+    """Build the admin app.
+
+    `sheets` / `gmail` exist so tests can inject doubles; in production they are
+    left unset and the real clients are constructed from config.
+    """
     cfg = cfg or load_config()
     admin_cfg = cfg.get("admin", {})
 
@@ -63,16 +69,30 @@ def create_app(cfg: dict | None = None) -> Flask:
             "FLASK_SECRET_KEY が設定されていません。"
             ".env に長いランダム文字列を設定してください（セッション偽造防止のため必須）。")
 
+    lifetime = timedelta(minutes=int(admin_cfg.get("session_lifetime_minutes", 120)))
+    secure_cookies = bool(admin_cfg.get("behind_proxy", False))
+
     app = Flask(__name__)
     app.secret_key = secret_key
-    app.permanent_session_lifetime = timedelta(
-        minutes=int(admin_cfg.get("session_lifetime_minutes", 120)))
+    app.permanent_session_lifetime = lifetime
     app.config.update(
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Lax",
         # Served over TLS whenever it sits behind the nginx front end.
-        SESSION_COOKIE_SECURE=bool(admin_cfg.get("behind_proxy", False)),
+        SESSION_COOKIE_SECURE=secure_cookies,
+        # login_user(remember=True) issues a cookie that defaults to a year,
+        # which quietly overrode session_lifetime_minutes. Tie it to the
+        # configured lifetime so that setting means what it says.
+        REMEMBER_COOKIE_DURATION=lifetime,
+        REMEMBER_COOKIE_HTTPONLY=True,
+        REMEMBER_COOKIE_SAMESITE="Lax",
+        REMEMBER_COOKIE_SECURE=secure_cookies,
     )
+
+    # Every state-changing route is a plain POST form. Without a token, any page
+    # the logged-in operator visits could make their browser send a customer
+    # email or stop a follow-up sequence on their behalf.
+    CSRFProtect(app)
 
     # Behind nginx/TLS: honor X-Forwarded-For so the IP allowlist sees the real client.
     if admin_cfg.get("behind_proxy", False):
@@ -89,19 +109,21 @@ def create_app(cfg: dict | None = None) -> Flask:
     steps = followup_cfg.get("steps", [{"days": 2}])
     followup_first_days = int(steps[0]["days"]) if steps else 2
 
-    # Shared backend clients
-    sheets = SheetsClient(
-        service_account_json=cfg["sheets"]["service_account_json"],
-        spreadsheet_id=cfg["sheets"]["spreadsheet_id"],
-        sheet_names=cfg["sheets"]["names"],
-    )
-    gmail = GmailClient(
-        address=cfg["gmail"]["address"],
-        app_password=cfg["gmail"]["app_password"],
-        imap_host=cfg["gmail"]["imap_host"],
-        smtp_host=cfg["gmail"]["smtp_host"],
-        smtp_port=cfg["gmail"]["smtp_port"],
-    )
+    # Shared backend clients (injected in tests, built from config in production)
+    if sheets is None:
+        sheets = SheetsClient(
+            service_account_json=cfg["sheets"]["service_account_json"],
+            spreadsheet_id=cfg["sheets"]["spreadsheet_id"],
+            sheet_names=cfg["sheets"]["names"],
+        )
+    if gmail is None:
+        gmail = GmailClient(
+            address=cfg["gmail"]["address"],
+            app_password=cfg["gmail"]["app_password"],
+            imap_host=cfg["gmail"]["imap_host"],
+            smtp_host=cfg["gmail"]["smtp_host"],
+            smtp_port=cfg["gmail"]["smtp_port"],
+        )
 
     login_manager = LoginManager(app)
     login_manager.login_view = "login"
@@ -232,6 +254,15 @@ def create_app(cfg: dict | None = None) -> Flask:
         sheets.advance_followup(iid, 99, None, "追客停止")
         flash("追客を停止しました。", "warning")
         return redirect(url_for("inquiry_detail", iid=iid))
+
+    @app.errorhandler(CSRFError)
+    def _handle_csrf(e):
+        logger.warning("CSRF validation failed for %s %s from %s",
+                       request.method, request.path, request.remote_addr)
+        return render_template(
+            "error.html",
+            message="セッションの有効期限が切れているか、不正なリクエストです。"
+                    "ログインし直してから、もう一度お試しください。"), 400
 
     @app.errorhandler(Exception)
     def _handle_unexpected(e):
