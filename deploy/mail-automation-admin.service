@@ -2,6 +2,10 @@
 Description=Mail Automation - admin web panel (gunicorn)
 After=network-online.target
 Wants=network-online.target
+# create_app() connects to Sheets at boot, so a Sheets outage fails the worker.
+# Stop retrying after 5 attempts in 5 minutes instead of looping indefinitely.
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 Type=simple

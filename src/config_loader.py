@@ -1,4 +1,5 @@
 from __future__ import annotations
+import logging
 import os
 from pathlib import Path
 
@@ -7,10 +8,18 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+logger = logging.getLogger(__name__)
+
 
 def _expand(value):
     if isinstance(value, str) and value.startswith("${") and value.endswith("}"):
-        return os.environ.get(value[2:-1], "")
+        key = value[2:-1]
+        resolved = os.environ.get(key, "")
+        if not resolved:
+            # Silence here is how ADMIN_ALLOWED_IPS could go missing and quietly
+            # disable the admin IP allowlist. Always say something.
+            logger.warning("Env var %s is not set — using an empty value", key)
+        return resolved
     return value
 
 

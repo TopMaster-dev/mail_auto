@@ -25,6 +25,32 @@ def _float(val, default: float = 0.0) -> float:
         return default
 
 
+# ACF fields arrive as a list, a scalar, or null depending on how the field was
+# registered, so every read goes through one of these three shape normalisers.
+
+def _first_str(val) -> str:
+    """List-or-scalar field → the first value as a trimmed string ('' if unset)."""
+    if isinstance(val, list):
+        val = val[0] if val else None
+    return "" if val is None else str(val).strip()
+
+
+def _first_int(val, default: int = 0) -> int:
+    """List-or-scalar field → the first value as an int."""
+    if isinstance(val, list):
+        val = val[0] if val else None
+    return default if val is None else _int(val, default)
+
+
+def _str_list(val) -> list[str]:
+    """List-or-comma-separated-string field → a list of trimmed strings."""
+    if isinstance(val, list):
+        return [str(v).strip() for v in val if v]
+    if isinstance(val, str):
+        return [v.strip() for v in val.split(",") if v.strip()]
+    return []
+
+
 class WordPressClient:
     """
     Fetches property data from rentmagazine.jp via WordPress REST API.
@@ -153,8 +179,12 @@ class WordPressClient:
         acf = raw.get("acf", {}) or {}
 
         def acf_get(key: str, default=None):
+            # A field can be present but null. `dict.get` only applies the
+            # default when the key is absent, so map null onto it explicitly —
+            # otherwise None leaks into str()/int() conversions below.
             field_name = self._fcfg.get(key, key)
-            return acf.get(field_name, default)
+            val = acf.get(field_name, default)
+            return default if val is None else val
 
         # ── Vacancy ──────────────────────────────────────────────────────────
         # acf.display_none == "" means the property is actively listed (vacant)
@@ -184,33 +214,16 @@ class WordPressClient:
         is_commission_free = cf_term in cat_names
 
         # ── ACF fields ───────────────────────────────────────────────────────
-        # Layout: acf.list_of_rooms is an array e.g. ['1LDK']
-        layout_raw = acf_get("layout", [])
-        if isinstance(layout_raw, list):
-            layout = layout_raw[0] if layout_raw else ""
-        else:
-            layout = str(layout_raw).strip()
+        layout = _first_str(acf_get("layout", []))          # e.g. ['1LDK']
+        walk_minutes = _first_int(acf_get("walk_minutes", []))  # e.g. ['10','15']
+        equipment = _str_list(acf_get("equipment", []))     # e.g. ['オートロック']
 
-        # Walk minutes: acf.walktime is an array e.g. ['10','15','20']
-        walktime_raw = acf_get("walk_minutes", [])
-        if isinstance(walktime_raw, list):
-            walk_minutes = _int(walktime_raw[0]) if walktime_raw else 0
-        else:
-            walk_minutes = _int(walktime_raw)
-
-        # Equipment: acf.equipment is an array
-        equip_raw = acf_get("equipment", [])
-        if isinstance(equip_raw, list):
-            equipment = [str(e).strip() for e in equip_raw if e]
-        elif isinstance(equip_raw, str):
-            equipment = [e.strip() for e in equip_raw.split(",") if e.strip()]
-        else:
-            equipment = []
-
+        # `title` and `link` can come back null for protected or malformed posts;
+        # one such post used to abort the whole startup load.
         return Property(
-            wp_id=raw.get("id", 0),
-            name=raw.get("title", {}).get("rendered", ""),
-            url=raw.get("link", ""),
+            wp_id=raw.get("id") or 0,
+            name=(raw.get("title") or {}).get("rendered") or "",
+            url=raw.get("link") or "",
             rent=_int(acf_get("rent", 0)),
             management_fee=_int(acf_get("management_fee", 0)),
             layout=layout,
@@ -223,5 +236,5 @@ class WordPressClient:
             is_vacant=is_vacant,
             is_commission_free=is_commission_free,
             area_sqm=_float(acf_get("area_sqm", 0.0)),
-            building_type=building_names[0] if building_names else acf.get("buildType", ""),
+            building_type=building_names[0] if building_names else (acf.get("buildType") or ""),
         )

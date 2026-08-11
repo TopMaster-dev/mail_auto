@@ -1,0 +1,17 @@
+{% extends "base.html" %}
+{% block title %}エラー{% endblock %}
+{% block content %}
+
+<div class="card shadow-sm">
+  <div class="card-body">
+    <h5 class="card-title text-danger">処理中にエラーが発生しました</h5>
+    <p class="small text-muted mb-3">
+      スプレッドシートまたはメールサーバーへの接続に問題がある可能性があります。
+      解消しない場合は、下記の内容を開発担当までお知らせください。
+    </p>
+    <pre class="bg-light p-3 small mb-3" style="white-space:pre-wrap;">{{ message }}</pre>
+    <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary btn-sm">一覧へ戻る</a>
+  </div>
+</div>
+
+{% endblock %}

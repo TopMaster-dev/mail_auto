@@ -5,6 +5,8 @@ from datetime import datetime
 from typing import Any
 
 import gspread
+import requests
+from google.auth import exceptions as google_auth_exceptions
 from google.oauth2.service_account import Credentials
 
 from src.core.models import Inquiry, NGHit
@@ -15,6 +17,17 @@ _SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive.readonly",
 ]
+
+# Worth retrying: Sheets quota/5xx (APIError), network blips, and OAuth token
+# refresh hiccups. Note APIError is a *subclass* of GSpreadException, so catching
+# GSpreadException here would also swallow permanent faults like a missing tab or
+# a duplicated header — those need a human, and retrying only delays the log.
+_TRANSIENT_ERRORS = (
+    gspread.exceptions.APIError,
+    requests.exceptions.RequestException,
+    google_auth_exceptions.TransportError,
+    google_auth_exceptions.RefreshError,
+)
 
 # ── row positions (1-indexed, row 1 = header) ──────────────────────────────
 _VACANCY_COL = 7        # "空室有無"
@@ -38,23 +51,53 @@ class SheetsClient:
     # ── internal helpers ────────────────────────────────────────────────────
 
     def _ws(self, key: str) -> gspread.Worksheet:
-        return self._ss.worksheet(self._names[key])
+        title = self._names[key]
+        try:
+            return self._ss.worksheet(title)
+        except gspread.exceptions.WorksheetNotFound as e:
+            raise RuntimeError(
+                f"スプレッドシートにシート「{title}」がありません。"
+                f"タブ名を確認するか setup_sheets.py を実行してください。"
+            ) from e
 
     def _ensure_headers(self) -> None:
         ws = self._ws("inquiries")
-        if ws.row_count < 1 or ws.cell(1, 1).value != "ID":
-            ws.insert_row(Inquiry.sheets_headers(), index=1)
-            logger.info("Created header row on 問い合わせ一覧 sheet")
+        # Only seed headers into a genuinely empty sheet. The previous check
+        # ("A1 is not 'ID'") inserted a row on top of existing data — and with
+        # the poller plus both gunicorn workers booting together, three times.
+        if self._retry(lambda: ws.get_all_values()):
+            return
+        self._retry(lambda: ws.append_row(Inquiry.sheets_headers(),
+                                          value_input_option="RAW"))
+        logger.info("Created header row on %s", ws.title)
 
     def _retry(self, fn, retries: int = 3, delay: float = 2.0):
         for attempt in range(retries):
             try:
                 return fn()
-            except gspread.exceptions.APIError as e:
+            except _TRANSIENT_ERRORS as e:
                 if attempt == retries - 1:
                     raise
-                logger.warning("Sheets API error (attempt %d): %s", attempt + 1, e)
+                logger.warning("Sheets call failed (attempt %d/%d): %s",
+                               attempt + 1, retries, e)
                 time.sleep(delay * (attempt + 1))
+
+    def _records(self, ws: gspread.Worksheet) -> list[dict]:
+        """`get_all_records` with a readable message for the usual sheet-edit slip.
+
+        gspread raises when the header row contains duplicates — two blank-header
+        columns count — which is easy to cause by hand-editing and otherwise
+        surfaces as an opaque traceback.
+        """
+        try:
+            return self._retry(lambda: ws.get_all_records())
+        except gspread.exceptions.APIError:
+            raise
+        except gspread.exceptions.GSpreadException as e:
+            raise RuntimeError(
+                f"シート「{ws.title}」の見出し行を読み取れません"
+                f"（見出しの重複や空欄が原因です）: {e}"
+            ) from e
 
     # ── inquiry write / update ──────────────────────────────────────────────
 
@@ -103,9 +146,7 @@ class SheetsClient:
 
     def read_ng_words(self) -> list[dict]:
         """Return list of {"word": str, "category": str}."""
-        ws = self._ws("ng_words")
-        rows = self._retry(lambda: ws.get_all_records())
-        return [r for r in rows if r.get("ワード")]
+        return [r for r in self._records(self._ws("ng_words")) if r.get("ワード")]
 
     # ── send log ────────────────────────────────────────────────────────────
 
@@ -131,12 +172,23 @@ class SheetsClient:
     def read_auto_send_conditions(self) -> dict:
         """Return dict of condition_key → bool from 設定 sheet."""
         try:
-            ws = self._ws("config")
-            rows = self._retry(lambda: ws.get_all_records())
-            return {r["設定キー"]: r["値"].strip().lower() == "true"
-                    for r in rows if r.get("設定キー")}
+            rows = self._records(self._ws("config"))
         except Exception:
+            # Failing closed is right, but the old bare `except: return {}` did it
+            # silently — an unreadable 設定 sheet looked identical to one that
+            # simply had auto-send switched off.
+            logger.exception("Could not read the 設定 sheet — treating every "
+                             "auto-send condition as off")
             return {}
+
+        conditions: dict[str, bool] = {}
+        for r in rows:
+            key = str(r.get("設定キー", "")).strip()
+            if key:
+                # gspread returns a real bool for a TRUE cell, so coerce to str
+                # before comparing — `.strip()` on a bool used to raise here.
+                conditions[key] = str(r.get("値", "")).strip().lower() == "true"
+        return conditions
 
     # ── lookup helpers for reply detection ─────────────────────────────────
 
@@ -155,8 +207,7 @@ class SheetsClient:
 
     def read_inquiries(self) -> list[dict]:
         """Return all inquiry rows as dicts (keys = headers)."""
-        ws = self._ws("inquiries")
-        return self._retry(lambda: ws.get_all_records())
+        return self._records(self._ws("inquiries"))
 
     def get_inquiry(self, inquiry_id: str) -> dict | None:
         for rec in self.read_inquiries():

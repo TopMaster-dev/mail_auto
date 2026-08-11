@@ -60,8 +60,12 @@ sudo chmod 600 /opt/mail_automation/.env /opt/mail_automation/service_account.js
 `.env` 内で本番用に確認すべき項目：
 - `CLAUDE_API_KEY`、`SPREADSHEET_ID`、`GMAIL_*`
 - `ADMIN_PASSWORD_HASH`（`venv/bin/python -m admin.set_password "本番パスワード"` で生成）
+  ※ 引用符や改行が混ざるとログインできません。出力をそのまま貼り付けてください。
 - `FLASK_SECRET_KEY`（ランダムな長い文字列）
+  ※ **必須**。未設定の場合、管理画面は起動時にエラーで停止します（セッション偽造防止）。
 - `ADMIN_ALLOWED_IPS`（管理画面を許可するIP/CIDR。例 `203.0.113.0/24`）
+  ※ **空の場合はすべてのIPからのアクセスを許可します。** 本番では必ず設定してください。
+  起動時に警告ログが出ます。
 
 `config/settings.yaml` で確認：
 - `admin.behind_proxy: true`（nginx 経由で公開する場合）
@@ -135,7 +139,8 @@ tail -f /opt/mail_automation/logs/mail_automation.log
 - [ ] `https://admin.example.com` でログインできる
 - [ ] テスト問い合わせ → 数分で管理画面に表示される
 - [ ] 送信ボタンでメールが届く（テストアドレス宛）
-- [ ] `data/scheduler.db` が生成されている（追客ジョブ永続化）
+- [ ] 追客状態はスプレッドシート（追客ステータス／次回追客予定日／追客回数）に
+      保存されるため、再起動後もそのまま再開されます（ローカルDBは使用しません）
 
 ## 更新（再デプロイ）
 

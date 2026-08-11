@@ -18,6 +18,15 @@ _SINGLE_KEYWORDS = {"単身", "1K", "1R", "1DK", "ワンルーム"}
 _FAMILY_KEYWORDS = {"ファミリー", "2LDK", "3LDK", "4LDK", "戸建て"}
 _DESIGNER_KEYWORDS = {"デザイナーズ", "リノベーション", "ガレージ", "秘密基地"}
 
+# pandas infers columns from the rows, so an empty property list would produce a
+# frame with no columns at all and every lookup below would raise KeyError.
+_DF_COLUMNS = [
+    "idx", "wp_id", "name", "url", "rent", "management_fee", "layout",
+    "nearest_station", "train_line", "city", "walk_minutes", "category_str",
+    "equipment_str", "is_vacant", "is_commission_free", "area_sqm",
+    "building_type", "ptype",
+]
+
 
 def _property_type(p: Property) -> str:
     cats = " ".join(p.category) + " " + p.layout
@@ -64,11 +73,17 @@ class PropertyScorer:
             "building_type": p.building_type,
             "ptype": _property_type(p),
         } for i, p in enumerate(properties)]
+        if not rows:
+            return pd.DataFrame(columns=_DF_COLUMNS)
         return pd.DataFrame(rows)
 
     def find_alternatives(self, inquiry_property: Property,
                           top_n: int = 3) -> list[Property]:
         """Return top_n vacant properties sorted by score, excluding the inquiry property."""
+        if self._df.empty:
+            logger.warning("No property data loaded — cannot suggest alternatives")
+            return []
+
         df = self._df[
             (self._df["is_vacant"] == True) &
             (self._df["wp_id"] != inquiry_property.wp_id) &

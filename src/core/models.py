@@ -129,8 +129,10 @@ class Inquiry:
         vac = str(rec.get("空室有無", "")).strip()
         is_vacant = True if vac == "あり" else (False if vac == "なし" else None)
 
+        # Sheets hands back "1.0" for a numeric cell often enough that int() alone
+        # would silently reset the counter to 0 and re-send an earlier follow-up.
         try:
-            followup_count = int(str(rec.get("追客回数", 0) or 0))
+            followup_count = int(float(str(rec.get("追客回数", 0) or 0)))
         except ValueError:
             followup_count = 0
 

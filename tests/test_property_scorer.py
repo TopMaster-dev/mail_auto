@@ -67,6 +67,15 @@ class TestPropertyScorer(unittest.TestCase):
         results = scorer.find_alternatives(inquiry, top_n=2)
         self.assertEqual(results[0].name, "デザイナーズ物件")
 
+    def test_empty_property_list_returns_empty(self):
+        # WordPress returning nothing gave pandas a frame with no columns at all,
+        # so the vacancy filter raised KeyError instead of yielding no matches.
+        self.assertEqual(PropertyScorer([]).find_alternatives(self.inquiry_prop), [])
+
+    def test_reload_to_empty_does_not_break_scoring(self):
+        self.scorer.reload([])
+        self.assertEqual(self.scorer.find_alternatives(self.inquiry_prop), [])
+
     def test_reload_updates_data(self):
         new_props = [_prop(99, "新物件", "知立駅", "名鉄三河線", "知立市")]
         self.scorer.reload(new_props)

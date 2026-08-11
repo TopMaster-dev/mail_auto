@@ -41,6 +41,18 @@ _OUT_OF_HOURS_NOTE = """\
 ※ 現在営業時間外（10:00〜18:00）のため、翌営業日にご確認のうえご返信いたします。
 お急ぎの場合は、翌営業日に改めてご連絡をいただけますと幸いです。"""
 
+# Lead-in for the alternatives block. Which one is used depends on *why* we are
+# suggesting alternatives — see _select_body.
+_LEAD_TAKEN = """\
+せっかくお問い合わせいただきましたが、タッチ差でお申し込みが入ってしまい、ご紹介できない状況です。
+そこで弊社がオススメの物件をご紹介させていただきます。"""
+
+# Used when the enquiry could not be matched to a listing. It must not claim the
+# property was taken — we simply do not know which property was asked about.
+_LEAD_UNIDENTIFIED = """\
+お問い合わせいただいたお部屋の詳細を確認しております。確認でき次第、改めてご連絡いたします。
+あわせて、ご希望に近いお部屋をいくつかご紹介させていただきます。"""
+
 
 class EmailAssembler:
     """
@@ -62,11 +74,8 @@ class EmailAssembler:
     ) -> tuple[str, str]:
         """Return (subject, plain_body). Plain body is what the operator reviews/edits."""
         subject = f"【{inquiry.inquiry_property_name}】お問い合わせありがとうございます"
-        if inquiry.is_vacant:
-            body = self._vacant_body(inquiry, property_intro, visit_invitation)
-        else:
-            body = self._unavailable_body(inquiry, alt_intros, visit_invitation)
-        return subject, body
+        return subject, self._select_body(
+            inquiry, property_intro, visit_invitation, alt_intros)
 
     def build_first_mail(
         self,
@@ -80,42 +89,78 @@ class EmailAssembler:
             inquiry, property_intro, visit_invitation, alt_intros)
         return subject, self._wrap_html(body)
 
-    def build_second_mail(self, inquiry: Inquiry, property_intro: str,
-                          visit_invitation: str,
-                          alt_intros: list[tuple[Property, str]]) -> tuple[str, str]:
-        subject = f"【{inquiry.inquiry_property_name}】先日はお問い合わせありがとうございます！"
+    def build_second_mail_parts(self, inquiry: Inquiry, property_intro: str,
+                                visit_invitation: str,
+                                alt_intros: list[tuple[Property, str]]) -> tuple[str, str]:
+        """Return (subject, plain_body) — the plain body is what the NG scan reads."""
         preamble = (
             "先日はお問い合わせ誠にありがとうございます。\n"
-            f"レントマガジン株式会社の{self._co['staff_name']}と申します。\n\n"
+            f"レントマガジン株式会社の{self._staff_name}と申します。\n\n"
             "その後、ご検討のほどはいかがでしょうか。\n"
             "まだご案内のご予定が決まっていないようでしたら、ぜひご検討いただけますと幸いです。"
         )
-        if inquiry.is_vacant:
-            body = preamble + "\n\n" + self._vacant_body(inquiry, property_intro, visit_invitation)
-        else:
-            body = preamble + "\n\n" + self._unavailable_body(inquiry, alt_intros, visit_invitation)
+        return self._followup_parts(
+            inquiry, preamble, property_intro, visit_invitation, alt_intros)
+
+    def build_second_mail(self, inquiry: Inquiry, property_intro: str,
+                          visit_invitation: str,
+                          alt_intros: list[tuple[Property, str]]) -> tuple[str, str]:
+        subject, body = self.build_second_mail_parts(
+            inquiry, property_intro, visit_invitation, alt_intros)
         return subject, self._wrap_html(body)
 
-    def build_third_mail(self, inquiry: Inquiry, property_intro: str,
-                         visit_invitation: str,
-                         alt_intros: list[tuple[Property, str]]) -> tuple[str, str]:
-        subject = f"【{inquiry.inquiry_property_name}】先日はお問い合わせありがとうございます！"
+    def build_third_mail_parts(self, inquiry: Inquiry, property_intro: str,
+                               visit_invitation: str,
+                               alt_intros: list[tuple[Property, str]]) -> tuple[str, str]:
+        """Return (subject, plain_body) — the plain body is what the NG scan reads."""
         preamble = (
             "先日はお問い合わせ誠にありがとうございます。\n"
-            f"レントマガジン株式会社の{self._co['staff_name']}と申します。\n\n"
+            f"レントマガジン株式会社の{self._staff_name}と申します。\n\n"
             "改めてご連絡させていただきました。\n"
             "実際にご来店・ご内覧いただくお客様の中には、写真では分かりにくい広さや周辺環境、"
             "日当たり、同条件の比較物件なども確認される方が多いです。\n"
             "「まずは比較してみたい」という段階でも大丈夫ですので、"
             "ご希望に近いお部屋をいくつかあわせてご案内させていただければと思います。"
         )
-        if inquiry.is_vacant:
-            body = preamble + "\n\n" + self._vacant_body(inquiry, property_intro, visit_invitation)
-        else:
-            body = preamble + "\n\n" + self._unavailable_body(inquiry, alt_intros, visit_invitation)
+        return self._followup_parts(
+            inquiry, preamble, property_intro, visit_invitation, alt_intros)
+
+    def build_third_mail(self, inquiry: Inquiry, property_intro: str,
+                         visit_invitation: str,
+                         alt_intros: list[tuple[Property, str]]) -> tuple[str, str]:
+        subject, body = self.build_third_mail_parts(
+            inquiry, property_intro, visit_invitation, alt_intros)
         return subject, self._wrap_html(body)
 
+    def _followup_parts(self, inquiry: Inquiry, preamble: str, property_intro: str,
+                        visit_invitation: str,
+                        alt_intros: list[tuple[Property, str]]) -> tuple[str, str]:
+        subject = f"【{inquiry.inquiry_property_name}】先日はお問い合わせありがとうございます！"
+        body = preamble + "\n\n" + self._select_body(
+            inquiry, property_intro, visit_invitation, alt_intros)
+        return subject, body
+
     # ── private builders ─────────────────────────────────────────────────────
+
+    @property
+    def _staff_name(self) -> str:
+        return self._co.get("staff_name", "")
+
+    def _select_body(self, inquiry: Inquiry, property_intro: str,
+                     visit_invitation: str,
+                     alt_intros: list[tuple[Property, str]]) -> str:
+        """Pick the body that matches what we actually know about the property.
+
+        Three distinct cases — collapsing the last two would tell a customer
+        their property was taken when we merely failed to identify it.
+        """
+        if inquiry.matched_property is None:
+            return self._alternatives_body(inquiry, alt_intros, visit_invitation,
+                                           _LEAD_UNIDENTIFIED)
+        if inquiry.is_vacant:
+            return self._vacant_body(inquiry, property_intro, visit_invitation)
+        return self._alternatives_body(inquiry, alt_intros, visit_invitation,
+                                       _LEAD_TAKEN)
 
     def _header(self, customer_name: str) -> str:
         return (
@@ -153,9 +198,9 @@ class EmailAssembler:
             _SIGNATURE,
         ]))
 
-    def _unavailable_body(self, inquiry: Inquiry,
-                          alt_intros: list[tuple[Property, str]],
-                          visit_invitation: str) -> str:
+    def _alternatives_body(self, inquiry: Inquiry,
+                           alt_intros: list[tuple[Property, str]],
+                           visit_invitation: str, lead: str) -> str:
         alt_blocks: list[str] = []
         for prop, intro in alt_intros:
             commission = "（仲介手数料無料）" if prop.is_commission_free else ""
@@ -169,12 +214,7 @@ class EmailAssembler:
             )
         alt_section = "\n\n".join(alt_blocks) if alt_blocks else "現在条件に近い物件を検索中です。"
 
-        header = (
-            f"{self._header(inquiry.customer_name)}\n\n"
-            "せっかくお問い合わせいただきましたが、タッチ差でお申し込みが入ってしまい、"
-            "ご紹介できない状況です。\n"
-            "そこで弊社がオススメの物件をご紹介させていただきます。"
-        )
+        header = f"{self._header(inquiry.customer_name)}\n\n{lead}"
 
         hours_note = f"\n{_OUT_OF_HOURS_NOTE}\n" if not self._in_hours else ""
 

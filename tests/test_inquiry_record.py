@@ -40,6 +40,16 @@ class TestFromSheetsRecord(unittest.TestCase):
     def test_blank_count_defaults_zero(self):
         self.assertEqual(Inquiry.from_sheets_record(self._rec(追客回数="")).followup_count, 0)
 
+    def test_float_formatted_count_is_preserved(self):
+        # Sheets hands back "1.0" for a numeric cell; int("1.0") raises, and the
+        # old fallback reset the counter to 0 — re-sending an earlier follow-up.
+        self.assertEqual(
+            Inquiry.from_sheets_record(self._rec(追客回数="1.0")).followup_count, 1)
+
+    def test_unparseable_count_falls_back_to_zero(self):
+        self.assertEqual(
+            Inquiry.from_sheets_record(self._rec(追客回数="なし")).followup_count, 0)
+
     def test_missing_dates_are_none(self):
         inq = Inquiry.from_sheets_record(self._rec(次回追客予定日="", 送信日時=""))
         self.assertIsNone(inq.next_followup_at)

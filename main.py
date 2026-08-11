@@ -13,7 +13,7 @@ import logging.handlers
 import os
 import signal
 import sys
-import time
+import threading
 from pathlib import Path
 
 import yaml
@@ -26,11 +26,26 @@ load_dotenv()
 _LOG_DIR = Path(__file__).parent / "logs"
 _LOG_DIR.mkdir(exist_ok=True)
 
+
+def _console_stream():
+    """stdout, forced to UTF-8 where possible.
+
+    A Windows console defaults to cp932, and every Japanese log line would then
+    raise inside the handler and be silently dropped. The systemd units set
+    PYTHONIOENCODING; this covers local runs.
+    """
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+    return sys.stdout
+
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     handlers=[
-        logging.StreamHandler(sys.stdout),
+        logging.StreamHandler(_console_stream()),
         logging.handlers.RotatingFileHandler(
             _LOG_DIR / "mail_automation.log",
             maxBytes=10 * 1024 * 1024,  # 10 MB
@@ -80,7 +95,11 @@ def _validate_config(cfg: dict) -> None:
         ("sheets.spreadsheet_id", cfg["sheets"]["spreadsheet_id"]),
         ("wordpress.base_url", cfg["wordpress"]["base_url"]),
     ]
-    missing = [name for name, val in required if not val or "your_" in val or "xxxxxxx" in val]
+    missing = [
+        name for name, val in required
+        if not val or (isinstance(val, str)
+                       and ("your_" in val or "xxxxxxx" in val))
+    ]
     if missing:
         logger.error("Missing required config values: %s", missing)
         sys.exit(1)
@@ -173,6 +192,7 @@ def build_processor(cfg: dict):
         scheduler = FollowupScheduler(
             sheets=sheets, gmail=gmail, wp=wp, generator=generator,
             scorer=scorer, company=cfg["company"], cfg=followup_cfg,
+            checker=checker,
         )
 
     return processor, cfg["gmail"]["poll_interval_seconds"], scheduler
@@ -230,7 +250,14 @@ def main() -> None:
         probe_wordpress(cfg)
         return
 
-    processor, interval, scheduler = build_processor(cfg)
+    try:
+        processor, interval, scheduler = build_processor(cfg)
+    except Exception:
+        # Startup touches Gmail, Sheets and WordPress. Fail with one readable
+        # line instead of a raw traceback so the cause is obvious in journalctl.
+        logger.exception("Startup failed — check Gmail/Sheets/WordPress "
+                         "connectivity and the spreadsheet tab names")
+        sys.exit(1)
 
     if args.once:
         logger.info("Running single poll cycle (--once mode)")
@@ -238,12 +265,11 @@ def main() -> None:
         return
 
     # ── continuous polling loop ───────────────────────────────────────────────
-    running = True
+    stop = threading.Event()
 
     def _shutdown(sig, frame):
-        nonlocal running
         logger.info("Shutdown signal received — stopping after current cycle")
-        running = False
+        stop.set()
 
     signal.signal(signal.SIGTERM, _shutdown)
     signal.signal(signal.SIGINT, _shutdown)
@@ -253,13 +279,15 @@ def main() -> None:
 
     logger.info("Mail automation started. Poll interval: %ds", interval)
     try:
-        while running:
+        while not stop.is_set():
             try:
                 processor.run_cycle()
             except Exception as e:
                 logger.exception("Unexpected error in poll cycle: %s", e)
-            if running:
-                time.sleep(interval)
+            # Event.wait() returns the moment the signal handler fires. PEP 475
+            # makes time.sleep() resume instead, so a stop used to hang for the
+            # rest of the interval and systemd would SIGKILL first.
+            stop.wait(interval)
     finally:
         if scheduler:
             scheduler.shutdown()

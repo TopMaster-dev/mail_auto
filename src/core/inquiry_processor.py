@@ -67,11 +67,21 @@ class InquiryProcessor:
         """Called once per poll interval. Processes all unread emails."""
         logger.info("─── Poll cycle start ───")
 
-        # Refresh NG word list from Sheets every cycle
-        ng_words = self._sheets.read_ng_words()
-        self._checker.reload_ng_words(ng_words)
+        # Refresh the NG word list first. Without it nothing can be screened, so
+        # skip the whole cycle rather than process mail unchecked. Mail stays
+        # unread because the IMAP fetch below never runs.
+        try:
+            self._checker.reload_ng_words(self._sheets.read_ng_words())
+        except Exception as e:
+            logger.error("Could not load NG words (%s) — skipping this cycle so "
+                         "no mail is processed unscreened", e)
+            return
 
-        emails = self._gmail.fetch_unread()
+        try:
+            emails = self._gmail.fetch_unread()
+        except Exception as e:
+            logger.error("IMAP fetch failed — skipping this cycle: %s", e)
+            return
         logger.info("Fetched %d unread email(s)", len(emails))
 
         auto_conditions = self._sheets.read_auto_send_conditions()
@@ -105,6 +115,14 @@ class InquiryProcessor:
         # ── Step 3: write initial row ────────────────────────────────────────
         self._sheets.write_inquiry(inquiry)
 
+        # No reply address means nothing downstream can succeed — bail out before
+        # spending any Claude calls on a draft that could never be sent.
+        if not inquiry.customer_email:
+            logger.warning("Inquiry %s has no sender address → 要確認", inquiry.id)
+            self._sheets.update_status(inquiry.id, "要確認")
+            self._sheets.write_review_log(inquiry.id, "送信先メールアドレスなし", "")
+            return
+
         # ── Step 4: check incoming email body ────────────────────────────────
         body_check = self._checker.check(inquiry.raw_body)
         if not body_check.is_clean:
@@ -125,16 +143,21 @@ class InquiryProcessor:
         inquiry.matched_property = matched
         inquiry.is_vacant = is_vacant
         # Initial row was written before lookup — update 空室有無 once we know it
-        if matched is not None:
-            self._sheets.update_vacancy(inquiry.id, "あり" if is_vacant else "なし")
+        self._sheets.update_vacancy(
+            inquiry.id,
+            "あり" if is_vacant else ("なし" if is_vacant is False else "不明"))
 
         # ── Step 6: AI draft generation → full assembled email body ──────────
         try:
             subject, body_plain, body_html = self._build_email(inquiry)
-        except RuntimeError as e:
-            logger.error("Draft generation failed for %s: %s", inquiry.id, e)
+        except Exception as e:
+            # Catch everything, not just the generator's RuntimeError: a scoring
+            # or property-data failure here would otherwise fall through to the
+            # caller's catch-all and leave the row silently stuck at 未対応.
+            logger.exception("Draft build failed for %s: %s", inquiry.id, e)
             self._sheets.update_status(inquiry.id, "要確認")
-            self._sheets.write_review_log(inquiry.id, "AI生成エラー", "")
+            self._sheets.write_review_log(
+                inquiry.id, f"文案生成エラー（{type(e).__name__}）", "")
             return
 
         inquiry.ai_draft = body_plain
@@ -220,7 +243,7 @@ class InquiryProcessor:
             in_reply_to=raw.get("in_reply_to", ""),
         )
 
-    def _lookup_property(self, inquiry: Inquiry) -> tuple[Property | None, bool]:
+    def _lookup_property(self, inquiry: Inquiry) -> tuple[Property | None, bool | None]:
         prop = None
         if inquiry.inquiry_property_url:
             prop = self._wp.get_property_by_url(inquiry.inquiry_property_url)
@@ -228,9 +251,12 @@ class InquiryProcessor:
             prop = self._wp.get_property_by_name(inquiry.inquiry_property_name)
 
         if prop is None:
-            logger.warning("Could not match property for inquiry %s — treating as vacant=unknown",
+            # Vacancy is genuinely unknown. Claiming either way would put a false
+            # statement in the mail, so leave it None and let the assembler use
+            # its neutral wording.
+            logger.warning("Could not match property for inquiry %s — vacancy unknown",
                            inquiry.id)
-            return None, True   # Default to vacant path (safer)
+            return None, None
 
         return prop, prop.is_vacant
 

@@ -69,8 +69,9 @@ class ContentChecker:
 
     def check(self, text: str) -> CheckResult:
         """
-        Run both checks. Discriminatory check is skipped if NG words
-        already found (status is 要確認 regardless).
+        Run both checks. Both always run, even when the NG scan already hit:
+        the outcome is 要確認 either way, but the 要確認履歴 entry should record
+        every reason the mail was held, not just the first one found.
         """
         normalized = unicodedata.normalize("NFKC", text)
         ng_hits = self._scan_ng(normalized)

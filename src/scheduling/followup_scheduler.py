@@ -47,13 +47,17 @@ class FollowupScheduler:
     safely resumes after a restart (no local job DB needed).
     """
 
-    def __init__(self, *, sheets, gmail, wp, generator, scorer, company: dict, cfg: dict):
+    def __init__(self, *, sheets, gmail, wp, generator, scorer, company: dict,
+                 cfg: dict, checker=None):
         self._sheets = sheets
         self._gmail = gmail
         self._wp = wp
         self._generator = generator
         self._scorer = scorer
         self._company = company
+        # ContentChecker. Optional so tests can build a bare scheduler, but
+        # production must pass one — see start().
+        self._checker = checker
         self._steps = [int(s["days"]) for s in cfg.get("steps", [])]
         self._max = int(cfg.get("max_followups", 2))
         self._interval = int(cfg.get("scan_interval_minutes", 30))
@@ -62,6 +66,9 @@ class FollowupScheduler:
     # ── lifecycle ────────────────────────────────────────────────────────────
 
     def start(self) -> None:
+        if self._checker is None:
+            logger.warning("Follow-up scheduler has no content checker — "
+                           "follow-up mails will NOT be NG-screened")
         self._scheduler = BackgroundScheduler()
         self._scheduler.add_job(
             self.scan_and_send, "interval",
@@ -107,20 +114,33 @@ class FollowupScheduler:
             return
         mail_type, new_count, next_days, status = decision
 
+        if not inquiry.customer_email:
+            logger.error("Inquiry %s has no address — stopping follow-up", inquiry.id)
+            self._sheets.advance_followup(
+                inquiry.id, inquiry.followup_count, None, "追客停止")
+            return
+
         prop = self._resolve_property(inquiry)
         inquiry.matched_property = prop
-        if inquiry.is_vacant is None:
-            inquiry.is_vacant = prop.is_vacant if prop else False
+        if inquiry.is_vacant is None and prop is not None:
+            inquiry.is_vacant = prop.is_vacant
 
         intro, invitation, alt_intros = self._build_segments(inquiry, prop)
         assembler = EmailAssembler(self._company, is_business_hours())
-        if mail_type == "2nd":
-            subject, html = assembler.build_second_mail(inquiry, intro, invitation, alt_intros)
-        else:
-            subject, html = assembler.build_third_mail(inquiry, intro, invitation, alt_intros)
+        build = (assembler.build_second_mail_parts if mail_type == "2nd"
+                 else assembler.build_third_mail_parts)
+        subject, body_plain = build(inquiry, intro, invitation, alt_intros)
+
+        # Follow-up bodies are freshly generated AI text. They used to go out
+        # without ever passing the NG / discriminatory-expression screen that
+        # every first mail must clear.
+        if self._checker is not None and not self._content_is_safe(
+                inquiry, mail_type, body_plain):
+            return
 
         reply_to = inquiry.send_message_id or inquiry.message_id
-        sent_mid = self._gmail.send(inquiry.customer_email, subject, html, reply_to)
+        sent_mid = self._gmail.send(inquiry.customer_email, subject,
+                                    EmailAssembler.wrap_html(body_plain), reply_to)
 
         # Log to send_log so a reply to this follow-up is also detected upstream.
         self._sheets.write_send_log(inquiry.id, inquiry.customer_email,
@@ -130,6 +150,24 @@ class FollowupScheduler:
         self._sheets.write_followup_log(inquiry.id, mail_type, "送信")
         logger.info("Sent %s follow-up for inquiry %s (status=%s)",
                     mail_type, inquiry.id, status)
+
+    def _content_is_safe(self, inquiry: Inquiry, mail_type: str, body: str) -> bool:
+        """Screen a follow-up body. On a hit, record it and stop the sequence."""
+        check = self._checker.check(body)
+        if check.is_clean:
+            return True
+
+        ng_str = ", ".join(h.word for h in check.ng_hits)
+        self._sheets.update_status(inquiry.id, "NG検出")
+        self._sheets.write_review_log(
+            inquiry.id,
+            f"{mail_type}追客メールNG: {check.discriminatory_reason}", ng_str)
+        self._sheets.advance_followup(
+            inquiry.id, inquiry.followup_count, None, "追客停止")
+        self._sheets.write_followup_log(inquiry.id, mail_type, "NG検出のため送信中止")
+        logger.warning("Follow-up %s for inquiry %s blocked by content check (%s)",
+                       mail_type, inquiry.id, ng_str or check.discriminatory_reason)
+        return False
 
     # ── content helpers (mirror InquiryProcessor's draft build) ──────────────
 

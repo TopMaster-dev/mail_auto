@@ -20,6 +20,7 @@ from flask import (
 from flask_login import (
     LoginManager, UserMixin, current_user, login_required, login_user, logout_user,
 )
+from werkzeug.exceptions import HTTPException
 
 from src.config_loader import load_config
 from src.core.models import Inquiry
@@ -54,10 +55,24 @@ def create_app(cfg: dict | None = None) -> Flask:
     cfg = cfg or load_config()
     admin_cfg = cfg.get("admin", {})
 
+    secret_key = admin_cfg.get("secret_key")
+    if not secret_key:
+        # The old fallback to a literal default meant an unset env var silently
+        # left every session cookie forgeable.
+        raise RuntimeError(
+            "FLASK_SECRET_KEY が設定されていません。"
+            ".env に長いランダム文字列を設定してください（セッション偽造防止のため必須）。")
+
     app = Flask(__name__)
-    app.secret_key = admin_cfg.get("secret_key") or "change-me-in-env"
+    app.secret_key = secret_key
     app.permanent_session_lifetime = timedelta(
         minutes=int(admin_cfg.get("session_lifetime_minutes", 120)))
+    app.config.update(
+        SESSION_COOKIE_HTTPONLY=True,
+        SESSION_COOKIE_SAMESITE="Lax",
+        # Served over TLS whenever it sits behind the nginx front end.
+        SESSION_COOKIE_SECURE=bool(admin_cfg.get("behind_proxy", False)),
+    )
 
     # Behind nginx/TLS: honor X-Forwarded-For so the IP allowlist sees the real client.
     if admin_cfg.get("behind_proxy", False):
@@ -66,6 +81,9 @@ def create_app(cfg: dict | None = None) -> Flask:
 
     password_hash = (admin_cfg.get("password_hash") or "").encode()
     allowed_networks = _parse_networks(admin_cfg.get("allowed_ips", ""))
+    if not allowed_networks:
+        logger.warning("ADMIN_ALLOWED_IPS is empty — the admin panel will accept "
+                       "connections from any address")
     followup_cfg = cfg.get("followup", {})
     followup_enabled = followup_cfg.get("enabled", False)
     steps = followup_cfg.get("steps", [{"days": 2}])
@@ -106,11 +124,23 @@ def create_app(cfg: dict | None = None) -> Flask:
             abort(403)
 
     # ── auth ─────────────────────────────────────────────────────────────────
+    def _password_matches(pw: bytes) -> bool:
+        if not password_hash:
+            logger.error("ADMIN_PASSWORD_HASH is not set — no login can succeed")
+            return False
+        try:
+            return bcrypt.checkpw(pw, password_hash)
+        except ValueError:
+            # A hash pasted with surrounding quotes or a stray newline raises
+            # "Invalid salt", which used to surface as a 500 on the login page.
+            logger.error("ADMIN_PASSWORD_HASH is not a valid bcrypt hash — "
+                         'regenerate it with: python -m admin.set_password "<password>"')
+            return False
+
     @app.route("/login", methods=["GET", "POST"])
     def login():
         if request.method == "POST":
-            pw = request.form.get("password", "").encode()
-            if password_hash and bcrypt.checkpw(pw, password_hash):
+            if _password_matches(request.form.get("password", "").encode()):
                 login_user(_AdminUser(), remember=True)
                 return redirect(url_for("dashboard"))
             flash("パスワードが正しくありません。", "danger")
@@ -127,14 +157,18 @@ def create_app(cfg: dict | None = None) -> Flask:
     @login_required
     def dashboard():
         status_filter = request.args.get("status", "")
-        records = sheets.read_inquiries()
-        records.reverse()  # newest first
-        if status_filter:
-            records = [r for r in records if str(r.get("ステータス", "")).strip() == status_filter]
+        # One read, not two — the whole sheet used to be fetched twice per page.
+        all_records = sheets.read_inquiries()
+
         counts: dict[str, int] = {}
-        for r in sheets.read_inquiries():
-            counts[str(r.get("ステータス", "")).strip()] = counts.get(
-                str(r.get("ステータス", "")).strip(), 0) + 1
+        for r in all_records:
+            status = str(r.get("ステータス", "")).strip()
+            counts[status] = counts.get(status, 0) + 1
+
+        records = list(reversed(all_records))  # newest first
+        if status_filter:
+            records = [r for r in records
+                       if str(r.get("ステータス", "")).strip() == status_filter]
         return render_template("dashboard.html", records=records,
                                status_filter=status_filter,
                                status_order=STATUS_ORDER, counts=counts)
@@ -198,6 +232,16 @@ def create_app(cfg: dict | None = None) -> Flask:
         sheets.advance_followup(iid, 99, None, "追客停止")
         flash("追客を停止しました。", "warning")
         return redirect(url_for("inquiry_detail", iid=iid))
+
+    @app.errorhandler(Exception)
+    def _handle_unexpected(e):
+        # 403/404 keep their own status; only genuine faults — almost always a
+        # Sheets outage — become the friendly page instead of a bare 500.
+        if isinstance(e, HTTPException):
+            return e
+        logger.exception("Unhandled error in the admin panel")
+        return render_template("error.html",
+                               message=f"{type(e).__name__}: {e}"), 500
 
     @app.context_processor
     def _inject():
