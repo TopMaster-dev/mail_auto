@@ -11,7 +11,7 @@ from unittest.mock import MagicMock
 
 import bcrypt
 
-from admin.app import create_app
+from admin.app import LoginThrottle, create_app
 
 _PASSWORD = "test-password"
 _TOKEN_RE = re.compile(r'name="csrf_token" value="([^"]+)"')
@@ -148,6 +148,63 @@ class TestSessionConfiguration(_AdminTestCase):
         app = create_app(cfg, sheets=MagicMock(), gmail=MagicMock())
         self.assertTrue(app.config["SESSION_COOKIE_SECURE"])
         self.assertTrue(app.config["REMEMBER_COOKIE_SECURE"])
+
+
+class TestLoginThrottle(unittest.TestCase):
+    """One password, no second factor — an exposed login form must lock out."""
+
+    def test_not_locked_before_the_limit(self):
+        t = LoginThrottle(max_attempts=3)
+        for _ in range(2):
+            t.record_failure("1.2.3.4")
+        self.assertEqual(t.retry_after("1.2.3.4"), 0)
+
+    def test_locks_out_at_the_limit(self):
+        t = LoginThrottle(max_attempts=3, lockout_seconds=900)
+        for _ in range(3):
+            t.record_failure("1.2.3.4")
+        self.assertGreater(t.retry_after("1.2.3.4"), 0)
+
+    def test_lockout_is_per_ip(self):
+        t = LoginThrottle(max_attempts=3)
+        for _ in range(3):
+            t.record_failure("1.2.3.4")
+        self.assertGreater(t.retry_after("1.2.3.4"), 0)
+        self.assertEqual(t.retry_after("5.6.7.8"), 0)
+
+    def test_success_clears_the_counter(self):
+        t = LoginThrottle(max_attempts=3)
+        t.record_failure("1.2.3.4")
+        t.record_failure("1.2.3.4")
+        t.record_success("1.2.3.4")
+        t.record_failure("1.2.3.4")
+        self.assertEqual(t.retry_after("1.2.3.4"), 0)
+
+    def test_expired_lockout_is_pruned(self):
+        t = LoginThrottle(max_attempts=1, lockout_seconds=0)
+        t.record_failure("1.2.3.4")
+        self.assertEqual(t.retry_after("1.2.3.4"), 0)
+
+
+class TestLoginLockoutRoute(_AdminTestCase):
+    def test_repeated_failures_return_429(self):
+        for _ in range(5):
+            resp = self.client.post(
+                "/login", data={"password": "wrong", "csrf_token": self._token()})
+        self.assertEqual(resp.status_code, 200)   # 5th is still a normal reject
+
+        blocked = self.client.post(
+            "/login", data={"password": "wrong", "csrf_token": self._token()})
+        self.assertEqual(blocked.status_code, 429)
+
+    def test_correct_password_rejected_while_locked_out(self):
+        for _ in range(5):
+            self.client.post(
+                "/login", data={"password": "wrong", "csrf_token": self._token()})
+        resp = self.client.post(
+            "/login", data={"password": _PASSWORD, "csrf_token": self._token()})
+        self.assertEqual(resp.status_code, 429)
+        self.assertEqual(self.client.get("/").status_code, 302)   # still logged out
 
 
 class TestStartupValidation(unittest.TestCase):

@@ -11,6 +11,8 @@ Run (prod):    gunicorn admin.wsgi:app -b 0.0.0.0:5000
 from __future__ import annotations
 import ipaddress
 import logging
+import threading
+import time
 from datetime import datetime, timedelta
 
 import bcrypt
@@ -37,6 +39,60 @@ STATUS_ORDER = ["自動送信可", "AI返信文生成済み", "要確認", "NG�
 
 class _AdminUser(UserMixin):
     id = "admin"
+
+
+class LoginThrottle:
+    """Lock out an IP after repeated failed logins.
+
+    The panel authenticates with a single password and no second factor, so the
+    login form is a brute-force target once nginx exposes it.
+
+    State is in-memory and therefore per-worker — the systemd unit runs gunicorn
+    with 2 workers, so the effective allowance is roughly double what is
+    configured here. That still cuts the attempt rate by orders of magnitude; if
+    the worker count grows, move this to a shared store.
+    """
+
+    def __init__(self, max_attempts: int = 5, window_seconds: int = 300,
+                 lockout_seconds: int = 900):
+        self._max = max_attempts
+        self._window = window_seconds
+        self._lockout = lockout_seconds
+        self._failures: dict[str, list[float]] = {}
+        self._locked_until: dict[str, float] = {}
+        self._lock = threading.Lock()
+
+    def retry_after(self, ip: str) -> int:
+        """Seconds this IP must wait before trying again (0 = not locked out)."""
+        with self._lock:
+            remaining = self._locked_until.get(ip, 0.0) - time.monotonic()
+            return int(remaining) + 1 if remaining > 0 else 0
+
+    def record_failure(self, ip: str) -> None:
+        now = time.monotonic()
+        with self._lock:
+            self._prune(now)
+            recent = [t for t in self._failures.get(ip, []) if now - t < self._window]
+            recent.append(now)
+            if len(recent) >= self._max:
+                self._locked_until[ip] = now + self._lockout
+                self._failures.pop(ip, None)
+            else:
+                self._failures[ip] = recent
+
+    def record_success(self, ip: str) -> None:
+        with self._lock:
+            self._failures.pop(ip, None)
+            self._locked_until.pop(ip, None)
+
+    def _prune(self, now: float) -> None:
+        """Drop expired entries so a distributed attack cannot grow the dicts."""
+        for addr, until in list(self._locked_until.items()):
+            if until <= now:
+                del self._locked_until[addr]
+        for addr, stamps in list(self._failures.items()):
+            if not any(now - t < self._window for t in stamps):
+                del self._failures[addr]
 
 
 def _parse_networks(allowed: str) -> list:
@@ -159,12 +215,33 @@ def create_app(cfg: dict | None = None, *, sheets=None, gmail=None) -> Flask:
                          'regenerate it with: python -m admin.set_password "<password>"')
             return False
 
+    throttle = LoginThrottle(
+        max_attempts=int(admin_cfg.get("login_max_attempts", 5)),
+        window_seconds=int(admin_cfg.get("login_window_seconds", 300)),
+        lockout_seconds=int(admin_cfg.get("login_lockout_seconds", 900)),
+    )
+
     @app.route("/login", methods=["GET", "POST"])
     def login():
         if request.method == "POST":
+            ip = request.remote_addr or "unknown"
+
+            wait = throttle.retry_after(ip)
+            if wait:
+                logger.warning("Login attempt from %s rejected — locked out for "
+                               "another %ds", ip, wait)
+                flash(f"試行回数が多すぎます。約{wait // 60 + 1}分後に再度お試しください。",
+                      "danger")
+                return render_template("login.html"), 429
+
             if _password_matches(request.form.get("password", "").encode()):
+                throttle.record_success(ip)
+                logger.info("Admin logged in from %s", ip)
                 login_user(_AdminUser(), remember=True)
                 return redirect(url_for("dashboard"))
+
+            throttle.record_failure(ip)
+            logger.warning("Failed admin login from %s", ip)
             flash("パスワードが正しくありません。", "danger")
         return render_template("login.html")
 
