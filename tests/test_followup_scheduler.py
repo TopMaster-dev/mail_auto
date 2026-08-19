@@ -113,7 +113,7 @@ class TestFollowupContentScreening(unittest.TestCase):
         gmail.send.return_value = "<sent-mid@rentmagazine.jp>"
         sheets = MagicMock()
         checker = MagicMock()
-        checker.check.return_value = CheckResult(
+        checker.check_generated.return_value = CheckResult(
             is_clean=is_clean,
             ng_hits=[] if is_clean else [NGHit(word="クレーム", category="クレーム系")],
             discriminatory=False, discriminatory_reason="",
@@ -137,8 +137,20 @@ class TestFollowupContentScreening(unittest.TestCase):
     def test_clean_body_is_screened_then_sent(self):
         sched, _sheets, gmail, checker = self._scheduler(is_clean=True)
         sched._send_followup(self._record())
-        checker.check.assert_called_once()
+        checker.check_generated.assert_called_once()
         gmail.send.assert_called_once()
+
+    def test_only_ai_segments_are_screened_not_the_template(self):
+        # The fixed template contains 初期費用 / 仲介手数料, which the client's own
+        # NG list also contains. Screening the assembled body would flag every
+        # follow-up forever, so only the generated text is passed in.
+        sched, _sheets, _gmail, checker = self._scheduler(is_clean=True)
+        sched._send_followup(self._record())
+        segments = checker.check_generated.call_args[0][0]
+        joined = " ".join(segments)
+        self.assertIn("紹介文", joined)
+        self.assertNotIn("初期費用", joined)
+        self.assertNotIn("レントマガジン株式会社", joined)
 
     def test_flagged_body_is_never_sent(self):
         sched, sheets, gmail, _checker = self._scheduler(is_clean=False)

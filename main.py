@@ -112,7 +112,6 @@ def build_processor(cfg: dict):
     """
     from src.ai.content_checker import ContentChecker
     from src.ai.draft_generator import DraftGenerator
-    from src.core.inquiry_filter import InquiryFilter
     from src.core.inquiry_processor import InquiryProcessor
     from src.email_builder.send_gate import SendGate
     from src.integrations.gmail_client import GmailClient
@@ -166,13 +165,6 @@ def build_processor(cfg: dict):
         global_require_confirmation=cfg["send"]["all_require_confirmation"],
     )
 
-    filter_cfg = cfg.get("inbox_filter", {})
-    inquiry_filter = InquiryFilter(
-        ignore_senders=filter_cfg.get("ignore_senders", []),
-        enabled=filter_cfg.get("enabled", True),
-        require_property_signal=filter_cfg.get("require_property_signal", False),
-    )
-
     followup_cfg = cfg.get("followup", {})
     processor = InquiryProcessor(
         gmail=gmail,
@@ -183,7 +175,6 @@ def build_processor(cfg: dict):
         scorer=scorer,
         gate=gate,
         company=cfg["company"],
-        inquiry_filter=inquiry_filter,
         followup_cfg=followup_cfg,
     )
 

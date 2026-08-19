@@ -85,6 +85,22 @@ class ContentChecker:
             discriminatory_reason=disc_reason,
         )
 
+    def check_generated(self, segments: list[str]) -> CheckResult:
+        """Screen only the AI-written parts of a reply.
+
+        The assembled mail also contains the fixed template the client supplied,
+        and that template itself contains 初期費用 and 仲介手数料 — words their own
+        NG list includes. Scanning the whole body would therefore flag every
+        draft permanently and nothing could ever be sent. Spec 17-2 asks for the
+        AI-generated reply text to be screened, which is exactly what this does.
+        """
+        text = "\n\n".join(s for s in segments if s and s.strip())
+        if not text:
+            # Nothing was generated for this mail, so there is nothing to screen.
+            return CheckResult(is_clean=True, ng_hits=[], discriminatory=False,
+                               discriminatory_reason="")
+        return self.check(text)
+
     # ── NG word scan ─────────────────────────────────────────────────────────
 
     def _scan_ng(self, normalized_text: str) -> list[NGHit]:

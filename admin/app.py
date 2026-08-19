@@ -126,7 +126,12 @@ def create_app(cfg: dict | None = None, *, sheets=None, gmail=None) -> Flask:
             ".env に長いランダム文字列を設定してください（セッション偽造防止のため必須）。")
 
     lifetime = timedelta(minutes=int(admin_cfg.get("session_lifetime_minutes", 120)))
-    secure_cookies = bool(admin_cfg.get("behind_proxy", False))
+    behind_proxy = bool(admin_cfg.get("behind_proxy", False))
+    # Defaults to behind_proxy, because the documented nginx deployment
+    # terminates TLS. Separable for an interim HTTP-only setup: a Secure cookie
+    # is never sent back over plain HTTP, so leaving these coupled turns login
+    # into a silent redirect loop with no error shown.
+    secure_cookies = bool(admin_cfg.get("secure_cookies", behind_proxy))
 
     app = Flask(__name__)
     app.secret_key = secret_key
@@ -150,10 +155,16 @@ def create_app(cfg: dict | None = None, *, sheets=None, gmail=None) -> Flask:
     # email or stop a follow-up sequence on their behalf.
     CSRFProtect(app)
 
-    # Behind nginx/TLS: honor X-Forwarded-For so the IP allowlist sees the real client.
-    if admin_cfg.get("behind_proxy", False):
+    # Behind nginx: honor X-Forwarded-For so the IP allowlist and the login
+    # lockout see the real client rather than 127.0.0.1 for every request.
+    if behind_proxy:
         from werkzeug.middleware.proxy_fix import ProxyFix
         app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
+        if not secure_cookies:
+            logger.warning(
+                "Admin panel is behind a proxy without TLS — the password and "
+                "session cookie cross the network in cleartext. Set "
+                "admin.secure_cookies: true once HTTPS is configured.")
 
     password_hash = (admin_cfg.get("password_hash") or "").encode()
     allowed_networks = _parse_networks(admin_cfg.get("allowed_ips", ""))

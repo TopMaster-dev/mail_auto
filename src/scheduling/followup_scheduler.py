@@ -6,6 +6,7 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 from src.core.models import Inquiry, Property
 from src.email_builder.assembler import EmailAssembler
+from src.core.inquiry_processor import _INCLUDE_VISIT_INVITATION
 from src.email_builder.send_gate import is_business_hours
 
 logger = logging.getLogger(__name__)
@@ -126,6 +127,8 @@ class FollowupScheduler:
             inquiry.is_vacant = prop.is_vacant
 
         intro, invitation, alt_intros = self._build_segments(inquiry, prop)
+        ai_segments = [s for s in [intro, invitation,
+                                   *(t for _, t in alt_intros)] if s and s.strip()]
         assembler = EmailAssembler(self._company, is_business_hours())
         build = (assembler.build_second_mail_parts if mail_type == "2nd"
                  else assembler.build_third_mail_parts)
@@ -135,7 +138,7 @@ class FollowupScheduler:
         # without ever passing the NG / discriminatory-expression screen that
         # every first mail must clear.
         if self._checker is not None and not self._content_is_safe(
-                inquiry, mail_type, body_plain):
+                inquiry, mail_type, ai_segments):
             return
 
         reply_to = inquiry.send_message_id or inquiry.message_id
@@ -151,9 +154,14 @@ class FollowupScheduler:
         logger.info("Sent %s follow-up for inquiry %s (status=%s)",
                     mail_type, inquiry.id, status)
 
-    def _content_is_safe(self, inquiry: Inquiry, mail_type: str, body: str) -> bool:
-        """Screen a follow-up body. On a hit, record it and stop the sequence."""
-        check = self._checker.check(body)
+    def _content_is_safe(self, inquiry: Inquiry, mail_type: str,
+                         ai_segments: list[str]) -> bool:
+        """Screen the AI-written parts. On a hit, record it and stop the sequence.
+
+        Segments only, not the assembled mail: the fixed template contains
+        初期費用 / 仲介手数料, which the client's word list also contains.
+        """
+        check = self._checker.check_generated(ai_segments)
         if check.is_clean:
             return True
 
@@ -182,7 +190,8 @@ class FollowupScheduler:
 
     def _build_segments(self, inquiry: Inquiry, prop: Property | None):
         seed = inquiry.raw_body or inquiry.inquiry_property_name or ""
-        invitation = self._generator.generate_visit_invitation(seed)
+        invitation = (self._generator.generate_visit_invitation(seed)
+                      if _INCLUDE_VISIT_INVITATION else "")
 
         if inquiry.is_vacant and prop:
             intro = self._generator.generate_property_intro(prop)

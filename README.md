@@ -14,7 +14,7 @@ Google スプレッドシートと管理画面に記録され、**担当者が�
 ```
 Gmail (IMAP, 5分ごと)
       │
-      ├─ 通知・ポータルメールを除外 ......................... inquiry_filter
+      ├─ 反響フォーマット判定（自社フォーム / SUUMO）........ reflection
       ├─ 既存スレッドへの返信を検知 → 追客停止 ............... inquiry_processor
       │
       ▼
@@ -26,7 +26,7 @@ Gmail (IMAP, 5分ごと)
       │  ├─ 空室なし  → 代替物件を3件スコアリングして紹介 ..... property_scorer
       │  └─ 特定できず → 空室状況には触れず近い物件を提案
       ▼
-  AI文案生成（物件紹介 / 代替紹介 / 来店誘導の一言）.......... draft_generator
+  AI文案生成（物件紹介 / 代替紹介）.......................... draft_generator
       │
       ▼
   固定文と組み立て（署名・URL・日程ひな形はAIを通さない）..... assembler
@@ -120,7 +120,7 @@ gunicorn admin.wsgi:app -b 127.0.0.1:5000    # 本番用
 ## テスト
 
 ```bash
-# ユニットテスト（92件）
+# ユニットテスト（130件）
 python -m pytest tests/ -v
 
 # 統合ドライラン（メールは送信しません）
@@ -149,7 +149,7 @@ mail_automation/
 ├── src/
 │   ├── core/
 │   │   ├── inquiry_processor.py   # 全体のオーケストレーター
-│   │   ├── inquiry_filter.py      # 通知・ポータルメールの除外
+│   │   ├── reflection.py          # 反響フォーマット判定・顧客情報抽出
 │   │   └── models.py              # Inquiry / Property / CheckResult
 │   ├── integrations/
 │   │   ├── gmail_client.py        # IMAP受信 + SMTP送信
@@ -159,7 +159,8 @@ mail_automation/
 │   │   ├── draft_generator.py     # 文案生成（3タスク）
 │   │   └── content_checker.py     # NGワード + 差別的表現チェック
 │   ├── matching/
-│   │   └── property_scorer.py     # 代替物件スコアリング（8段階）
+│   │   ├── property_scorer.py     # 代替物件スコアリング（8段階）
+│   │   └── area.py                # エリア近接判定（遠方物件の抑止）
 │   ├── email_builder/
 │   │   ├── assembler.py           # 固定文 + AI生成文の組立
 │   │   └── send_gate.py           # 送信可否の判定
@@ -215,7 +216,7 @@ mail_automation/
 | `business_hours` | `10:00`–`18:00` | 土日祝も営業。時間外は「翌営業日にご返信」の一文が入ります |
 | `followup.steps` | `2日` → `3日` | 追客の間隔 |
 | `followup.max_followups` | `2` | 2通目・3通目まで（1通目は初回返信） |
-| `inbox_filter.ignore_senders` | noreply 等 | お客様の問い合わせではない送信元 |
+| 反響判定 | フォーマット判定 | 自社フォーム / SUUMO の形式のみ取り込み（`src/core/reflection.py`） |
 | `admin.allowed_ips` | `.env` 参照 | 管理画面のIP制限 |
 
 ---

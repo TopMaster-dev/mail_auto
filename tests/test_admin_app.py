@@ -149,6 +149,29 @@ class TestSessionConfiguration(_AdminTestCase):
         self.assertTrue(app.config["SESSION_COOKIE_SECURE"])
         self.assertTrue(app.config["REMEMBER_COOKIE_SECURE"])
 
+    def test_secure_cookies_can_be_disabled_for_http_only_deployment(self):
+        # Behind nginx but without TLS yet: a Secure cookie is never sent back
+        # over plain HTTP, which turns login into a silent redirect loop.
+        cfg = _cfg()
+        cfg["admin"]["behind_proxy"] = True
+        cfg["admin"]["secure_cookies"] = False
+        app = create_app(cfg, sheets=MagicMock(), gmail=MagicMock())
+        self.assertFalse(app.config["SESSION_COOKIE_SECURE"])
+        self.assertFalse(app.config["REMEMBER_COOKIE_SECURE"])
+
+    def test_http_only_login_actually_completes(self):
+        cfg = _cfg()
+        cfg["admin"]["behind_proxy"] = True
+        cfg["admin"]["secure_cookies"] = False
+        sheets = MagicMock()
+        sheets.read_inquiries.return_value = []
+        app = create_app(cfg, sheets=sheets, gmail=MagicMock())
+        client = app.test_client()   # test client speaks http, not https
+        token = _TOKEN_RE.search(
+            client.get("/login").get_data(as_text=True)).group(1)
+        client.post("/login", data={"password": _PASSWORD, "csrf_token": token})
+        self.assertEqual(client.get("/").status_code, 200)   # not bounced to login
+
 
 class TestLoginThrottle(unittest.TestCase):
     """One password, no second factor — an exposed login form must lock out."""

@@ -41,11 +41,25 @@ _OUT_OF_HOURS_NOTE = """\
 ※ 現在営業時間外（10:00〜18:00）のため、翌営業日にご確認のうえご返信いたします。
 お急ぎの場合は、翌営業日に改めてご連絡をいただけますと幸いです。"""
 
+def _join_blocks(parts: list[str]) -> str:
+    """Join body sections with exactly one blank line between them.
+
+    Sections carry their own trailing newlines, so a plain join left triple
+    newlines wherever a section was empty — visible now that the AI 一言 is gone.
+    """
+    return "\n\n".join(p.strip("\n") for p in parts if p and p.strip())
+
+
+# Stated once per mail, after the listings — never once per property.
+_INITIAL_COST_NOTE = (
+    "今回お送りさせて頂きました弊社WEBのURLの初期費用に記載させて"
+    "いただいていますので、ご参考いただければと思います。"
+)
+
 # Lead-in for the alternatives block. Which one is used depends on *why* we are
 # suggesting alternatives — see _select_body.
 _LEAD_TAKEN = """\
-せっかくお問い合わせいただきましたが、タッチ差でお申し込みが入ってしまい、ご紹介できない状況です。
-そこで弊社がオススメの物件をご紹介させていただきます。"""
+せっかくお問い合わせいただきましたが、タッチ差でお申し込みが入ってしまい、ご紹介できない状況ですので弊社がオススメの物件をご紹介させていただきます。"""
 
 # Used when the enquiry could not be matched to a listing. It must not claim the
 # property was taken — we simply do not know which property was asked about.
@@ -179,14 +193,13 @@ class EmailAssembler:
                 f"◆お問い合わせ物件\n"
                 f"物件名：{prop.name}\n"
                 f"{prop.url}\n"
-                f"今回お送りさせて頂きました弊社WEBのURLの初期費用に記載させていただいています"
-                f"ので、ご参考いただければと思います。{commission}\n\n"
+                f"{_INITIAL_COST_NOTE}{commission}\n\n"
                 f"{property_intro}\n"
             )
 
         hours_note = f"\n{_OUT_OF_HOURS_NOTE}\n" if not self._in_hours else ""
 
-        return "\n\n".join(filter(None, [
+        return _join_blocks([
             self._header(inquiry.customer_name),
             prop_block,
             visit_invitation,
@@ -196,7 +209,7 @@ class EmailAssembler:
             "ご返事お待ちしていますので、よろしくお願い申し上げます。",
             hours_note,
             _SIGNATURE,
-        ]))
+        ])
 
     def _alternatives_body(self, inquiry: Inquiry,
                            alt_intros: list[tuple[Property, str]],
@@ -207,18 +220,19 @@ class EmailAssembler:
             alt_blocks.append(
                 f"◆おすすめ物件{commission}\n"
                 f"物件名：{prop.name}\n"
-                f"{prop.url}\n"
-                f"今回お送りさせて頂きました弊社WEBのURLの初期費用に記載させていただいています"
-                f"ので、ご参考いただければと思います。\n\n"
+                f"{prop.url}\n\n"
                 f"{intro}"
             )
         alt_section = "\n\n".join(alt_blocks) if alt_blocks else "現在条件に近い物件を検索中です。"
+        if alt_blocks:
+            # Once, after every listing — not repeated per property.
+            alt_section = f"{alt_section}\n\n{_INITIAL_COST_NOTE}"
 
         header = f"{self._header(inquiry.customer_name)}\n\n{lead}"
 
         hours_note = f"\n{_OUT_OF_HOURS_NOTE}\n" if not self._in_hours else ""
 
-        return "\n\n".join(filter(None, [
+        return _join_blocks([
             header,
             alt_section,
             visit_invitation,
@@ -228,7 +242,7 @@ class EmailAssembler:
             "ご返事お待ちしていますので、よろしくお願い申し上げます。",
             hours_note,
             _SIGNATURE,
-        ]))
+        ])
 
     @staticmethod
     def wrap_html(text: str) -> str:

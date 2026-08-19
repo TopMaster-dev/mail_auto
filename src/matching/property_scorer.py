@@ -4,6 +4,7 @@ import logging
 import pandas as pd
 
 from src.core.models import Property
+from src.matching import area
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +95,8 @@ class PropertyScorer:
             logger.warning("No vacant properties available for scoring")
             return []
 
+        df = self._restrict_by_area(df, inquiry_property.city, top_n)
+
         ptype = _property_type(inquiry_property)
         df["score"] = 0
 
@@ -151,6 +154,30 @@ class PropertyScorer:
         top = df.nlargest(min(top_n, len(df)), "score")
         logger.info("Scored %d candidates → returning top %d", len(df), len(top))
         return [self._all[int(row["idx"])] for _, row in top.iterrows()]
+
+    def _restrict_by_area(self, df, reference_city: str, top_n: int):
+        """Narrow candidates to the closest area that can still fill the list.
+
+        Scoring alone let a distant listing win on rent and layout, which is how
+        an 岡崎市 inquiry returned 名古屋市 properties. The priority order is
+        unchanged — this only decides which properties get scored at all.
+        """
+        if not reference_city:
+            return df
+
+        tiers = df["city"].apply(lambda c: area.distance_tier(reference_city, c))
+        for limit, label in ((area.SAME, "same area"),
+                             (area.ADJACENT, "adjacent areas"),
+                             (area.SAME_REGION, "same region")):
+            pool = df[tiers <= limit]
+            if len(pool) >= top_n:
+                logger.info("Area guard: %d candidate(s) within %s of %s",
+                            len(pool), label, reference_city)
+                return pool
+
+        logger.warning("Area guard: fewer than %d candidates near %s — widening "
+                       "to all areas", top_n, reference_city)
+        return df
 
     def reload(self, properties: list[Property]) -> None:
         """Call when property data is refreshed from WordPress."""

@@ -2,6 +2,24 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
+from zoneinfo import ZoneInfo
+
+_JST = ZoneInfo("Asia/Tokyo")
+
+
+def fmt_dt(dt: Optional[datetime]) -> str:
+    """Format a timestamp for the spreadsheet, always in JST.
+
+    Incoming mail carries the sender's own UTC offset — the WordPress form
+    stamps -0400 — and strftime renders an aware datetime in *its* zone, which
+    recorded receipts up to 16 hours early. Naive values are already
+    server-local (the VPS runs Asia/Tokyo) and are left alone.
+    """
+    if dt is None:
+        return ""
+    if dt.tzinfo is not None:
+        dt = dt.astimezone(_JST)
+    return dt.strftime("%Y-%m-%d %H:%M:%S")
 
 
 @dataclass
@@ -80,7 +98,7 @@ class Inquiry:
         ng_words_str = ", ".join(f"{h.word}({h.category})" for h in self.ng_hits)
         return [
             self.id,
-            self.received_at.strftime("%Y-%m-%d %H:%M:%S"),
+            fmt_dt(self.received_at),
             self.customer_name,
             self.customer_email,
             self.inquiry_property_name,
@@ -93,8 +111,8 @@ class Inquiry:
             self.ng_category,
             self.discriminatory_reason,
             self.followup_status,
-            self.next_followup_at.strftime("%Y-%m-%d %H:%M:%S") if self.next_followup_at else "",
-            self.sent_at.strftime("%Y-%m-%d %H:%M:%S") if self.sent_at else "",
+            fmt_dt(self.next_followup_at),
+            fmt_dt(self.sent_at),
             self.followup_count,
             self.staff_memo,
         ]

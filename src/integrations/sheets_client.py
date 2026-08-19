@@ -44,8 +44,12 @@ class SheetsClient:
     def __init__(self, service_account_json: str, spreadsheet_id: str, sheet_names: dict):
         creds = Credentials.from_service_account_file(service_account_json, scopes=_SCOPES)
         gc = gspread.authorize(creds)
-        self._ss = gc.open_by_key(spreadsheet_id)
         self._names = sheet_names
+        # Retried like every other Sheets call. This is the first network call
+        # the service makes at boot, and Google returns a transient 503 here
+        # often enough to matter — observed on the very first deploy attempt.
+        # Unretried, a blip becomes a failed start, and systemd gives up after 5.
+        self._ss = self._retry(lambda: gc.open_by_key(spreadsheet_id))
         self._ensure_headers()
 
     # ── internal helpers ────────────────────────────────────────────────────

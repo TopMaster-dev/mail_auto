@@ -65,30 +65,20 @@ followup:
     - days: 3                      # 3rd mail, 3 days after the 2nd
   max_followups: 2                 # 2nd and 3rd mail (the 1st mail is the initial reply)
 
-inbox_filter:
-  enabled: true
-  # When true, only process mail that references a property (rentmagazine.jp URL or
-  # 物件/内見/問い合わせ keywords). Stronger noise filter; enable if the inbox receives
-  # many notifications. Default false processes all non-denylisted mail.
-  require_property_signal: false
-  # Sender fragments that are never customer inquiries (notifications, portals).
-  ignore_senders:
-    - "noreply@"
-    - "no-reply@"
-    - "no-reply-"
-    - "lancers.co.jp"
-    - "zehitomo.com"
-    - "indeedemail.com"
-    - "indeed.com"
-    - "accounts.google.com"
-    - "mail.anthropic.com"
-    - "hekikai-takken.gr.jp"
+# 反響メールの判定は「フォーマット判定方式」です（src/core/reflection.py）。
+# 自社お問い合わせフォームとSUUMO(リクルートJDS)の形式に一致したメールのみを
+# 反響として取り込み、それ以外（業者メール・通知・解約フォーム等）は無視します。
+# 除外リスト方式では未知の送信元がすべて通過してしまうため廃止しました。
 
 admin:
   host: "0.0.0.0"
   port: 5000
   session_lifetime_minutes: 120
-  behind_proxy: false               # set true when served behind nginx/TLS
+  behind_proxy: false               # true when served behind nginx (trusts X-Forwarded-For)
+  # Secure flag on the session cookie. Defaults to behind_proxy. Set false only
+  # for an interim HTTP-only deployment — a Secure cookie is never returned over
+  # plain HTTP, so login would silently loop. Set true as soon as TLS is on.
+  # secure_cookies: true
   password_hash: "${ADMIN_PASSWORD_HASH}"
   secret_key: "${FLASK_SECRET_KEY}"
   allowed_ips: "${ADMIN_ALLOWED_IPS}"   # comma-separated CIDRs; empty = allow all

@@ -6,8 +6,8 @@ from datetime import datetime, timedelta
 
 from src.ai.content_checker import ContentChecker
 from src.ai.draft_generator import DraftGenerator
-from src.core.inquiry_filter import InquiryFilter
 from src.core.models import Inquiry, Property
+from src.core.reflection import Reflection, identify
 from src.email_builder.assembler import EmailAssembler
 from src.email_builder.send_gate import (
     GATE_AUTO, GATE_BLOCKED, GATE_CONFIRM, SendGate, is_business_hours
@@ -15,9 +15,28 @@ from src.email_builder.send_gate import (
 from src.integrations.gmail_client import GmailClient
 from src.integrations.sheets_client import SheetsClient
 from src.integrations.wp_client import WordPressClient
+from src.matching import area
 from src.matching.property_scorer import PropertyScorer
 
 logger = logging.getLogger(__name__)
+
+# imap_tools yields a 1900-01-01 sentinel when the Date header is missing or
+# unparseable. It is truthy, so it used to be stored verbatim.
+_EARLIEST_PLAUSIBLE_YEAR = 2000
+
+# The AI-written 来店誘導前の一言 (spec 7-3) was withdrawn on the client's
+# instruction: the generated sentence read unnaturally and they asked for it
+# to be dropped outright rather than replaced. Set True to reinstate.
+_INCLUDE_VISIT_INVITATION = False
+
+
+def _received_at(raw: dict) -> datetime:
+    """The message's Date, or now when it is absent or implausible."""
+    dt = raw.get("date")
+    if not isinstance(dt, datetime) or dt.year < _EARLIEST_PLAUSIBLE_YEAR:
+        return datetime.now()
+    return dt
+
 
 _PROP_URL_PATTERN = re.compile(r"https?://rentmagazine\.jp/\S+")
 # Property name in Japanese/ASCII quotes — the most common way customers refer
@@ -46,7 +65,6 @@ class InquiryProcessor:
         scorer: PropertyScorer,
         gate: SendGate,
         company: dict,
-        inquiry_filter: InquiryFilter | None = None,
         followup_cfg: dict | None = None,
     ):
         self._gmail = gmail
@@ -57,7 +75,6 @@ class InquiryProcessor:
         self._scorer = scorer
         self._gate = gate
         self._company = company
-        self._filter = inquiry_filter or InquiryFilter(ignore_senders=[], enabled=False)
         followup_cfg = followup_cfg or {}
         self._followup_enabled = followup_cfg.get("enabled", False)
         steps = followup_cfg.get("steps", [{"days": 2}])
@@ -87,8 +104,6 @@ class InquiryProcessor:
         auto_conditions = self._sheets.read_auto_send_conditions()
 
         for raw in emails:
-            if not self._filter.is_inquiry(raw):
-                continue
             try:
                 self._process_one(raw, auto_conditions)
             except Exception as e:
@@ -108,8 +123,17 @@ class InquiryProcessor:
                 logger.info("Customer replied to inquiry %s → followup stopped", orig_id)
                 return
 
-        # ── Step 2: parse inquiry ────────────────────────────────────────────
-        inquiry = self._parse_email(raw)
+        # ── Step 2: is this a reflection at all? ─────────────────────────────
+        # Positive identification. Anything that is not a recognised reflection
+        # format (vendor mail, portal notices, the 解約 form) is ignored outright
+        # rather than drafted a reply and surfaced as 自動送信可.
+        reflection = identify(raw)
+        if reflection is None:
+            logger.info("Not a reflection — skipped: from=%s subject=%s",
+                        raw.get("from_addr"), (raw.get("subject") or "")[:60])
+            return
+
+        inquiry = self._build_inquiry(raw, reflection)
         logger.info("Processing inquiry %s from %s", inquiry.id, inquiry.customer_email)
 
         # ── Step 3: write initial row ────────────────────────────────────────
@@ -149,7 +173,8 @@ class InquiryProcessor:
 
         # ── Step 6: AI draft generation → full assembled email body ──────────
         try:
-            subject, body_plain, body_html = self._build_email(inquiry)
+            subject, body_plain, body_html, ai_segments = self._build_email(
+                inquiry, reflection)
         except Exception as e:
             # Catch everything, not just the generator's RuntimeError: a scoring
             # or property-data failure here would otherwise fall through to the
@@ -163,8 +188,13 @@ class InquiryProcessor:
         inquiry.ai_draft = body_plain
         self._sheets.update_draft(inquiry.id, body_plain)
 
-        # ── Step 7: check the assembled draft ────────────────────────────────
-        draft_check = self._checker.check(body_plain)
+        # ── Step 7: check the AI-written text ────────────────────────────────
+        # Only the generated segments — not the whole assembled mail. The fixed
+        # template the client supplied itself contains 初期費用 and 仲介手数料,
+        # so scanning the full body against their word list would flag every
+        # draft forever and nothing could ever be sent. Spec 17-2 asks for the
+        # AI-generated reply text to be screened, which is exactly this.
+        draft_check = self._checker.check_generated(ai_segments)
         if not draft_check.is_clean:
             inquiry.discriminatory_flag = draft_check.discriminatory
             self._sheets.update_status(inquiry.id, "NG検出")
@@ -207,40 +237,46 @@ class InquiryProcessor:
 
     # ── helpers ──────────────────────────────────────────────────────────────
 
-    def _parse_email(self, raw: dict) -> Inquiry:
-        body = raw.get("body", "")
-        name = raw.get("from_name") or raw.get("from_addr", "").split("@")[0]
+    def _build_inquiry(self, raw: dict, reflection: Reflection) -> Inquiry:
+        """Build an Inquiry from an identified reflection.
 
-        # Try to extract property URL from body (most reliable identifier)
-        prop_url = ""
-        urls = _PROP_URL_PATTERN.findall(body)
-        if urls:
-            prop_url = urls[0]
+        Name and address come from the message *body*. The envelope sender is
+        the web form (contact@rentmagazine.jp) or the portal (jds.suumo.jp) —
+        never the customer — so replying to it sent mail back to the company
+        instead of to the person who enquired.
 
-        # Property name: quoted name first, then labelled name, then subject
-        prop_name = ""
-        m = _PROP_QUOTED_PATTERN.search(body)
-        if m:
-            prop_name = m.group(1).strip()
-        if not prop_name:
-            m = _PROP_NAME_PATTERN.search(body)
-            if m:
-                prop_name = m.group(1).strip()
-        if not prop_name:
-            subj = raw.get("subject", "")
-            bracket = re.search(r"[【\[](.+?)[】\]]", subj)
-            prop_name = (bracket.group(1) if bracket else subj).strip()
-
+        `raw_body` stays the full message so the NG scan sees everything.
+        """
         return Inquiry(
             id=str(uuid.uuid4()),
-            received_at=raw.get("date") or datetime.now(),
-            customer_name=name,
-            customer_email=raw.get("from_addr", ""),
-            inquiry_property_name=prop_name,
-            inquiry_property_url=prop_url,
-            raw_body=body,
+            received_at=_received_at(raw),
+            customer_name=reflection.customer_name,
+            customer_email=reflection.customer_email,
+            inquiry_property_name=reflection.property_name,
+            inquiry_property_url=reflection.property_url,
+            raw_body=raw.get("body", ""),
             message_id=raw.get("message_id", ""),
             in_reply_to=raw.get("in_reply_to", ""),
+        )
+
+    @staticmethod
+    def _reference_property(reflection: Reflection | None) -> Property:
+        """A stand-in reference when the enquiry property isn't in our listings.
+
+        A blank reference makes the alternatives ranking near-arbitrary, which is
+        how a 岡崎市 enquiry came back with 名古屋市 suggestions. Portal mail
+        carries the address in its own body, so at least the area is known and
+        the area guard can keep the suggestions local.
+        """
+        city = ""
+        if reflection is not None:
+            city = area.city_from_address(reflection.extras.get("所在地", ""))
+        return Property(
+            wp_id=0, name="", url="", rent=0, management_fee=0,
+            layout="", nearest_station="", train_line="", city=city,
+            walk_minutes=0, category=[], equipment=[],
+            is_vacant=False, is_commission_free=False,
+            area_sqm=0.0, building_type="",
         )
 
     def _lookup_property(self, inquiry: Inquiry) -> tuple[Property | None, bool | None]:
@@ -260,26 +296,23 @@ class InquiryProcessor:
 
         return prop, prop.is_vacant
 
-    def _build_email(self, inquiry: Inquiry) -> tuple[str, str, str]:
+    def _build_email(self, inquiry: Inquiry,
+                     reflection: Reflection | None = None
+                     ) -> tuple[str, str, str, list[str]]:
         """
         Generate AI segments and assemble the full first mail.
         Returns (subject, plain_body, html_body). The plain body is stored as the
         operator-reviewable draft and is what the NG check scans.
         """
-        invitation = self._generator.generate_visit_invitation(inquiry.raw_body)
+        invitation = (self._generator.generate_visit_invitation(inquiry.raw_body)
+                      if _INCLUDE_VISIT_INVITATION else "")
         alt_intros: list[tuple[Property, str]] = []
 
         if inquiry.is_vacant and inquiry.matched_property:
             intro = self._generator.generate_property_intro(inquiry.matched_property)
         else:
             intro = ""
-            base = inquiry.matched_property or Property(
-                wp_id=0, name="", url="", rent=0, management_fee=0,
-                layout="", nearest_station="", train_line="", city="",
-                walk_minutes=0, category=[], equipment=[],
-                is_vacant=False, is_commission_free=False,
-                area_sqm=0.0, building_type="",
-            )
+            base = inquiry.matched_property or self._reference_property(reflection)
             for alt in self._scorer.find_alternatives(base, top_n=3):
                 alt_text = self._generator.generate_alt_intro(
                     inquiry.matched_property or alt, alt)
@@ -288,4 +321,6 @@ class InquiryProcessor:
         assembler = EmailAssembler(self._company, is_business_hours())
         subject, body_plain = assembler.build_first_mail_parts(
             inquiry, intro, invitation, alt_intros)
-        return subject, body_plain, assembler.wrap_html(body_plain)
+        ai_segments = [s for s in [intro, invitation,
+                                   *(t for _, t in alt_intros)] if s and s.strip()]
+        return subject, body_plain, assembler.wrap_html(body_plain), ai_segments
