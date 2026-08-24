@@ -25,6 +25,16 @@ def _parse_json_lenient(raw: str) -> dict:
             return json.loads(m.group(0))
         raise
 
+# Which mail in the sequence is being screened. Cost words are marked
+# 2通目以降 in the spreadsheet: asking the price is a normal first enquiry,
+# but the client wants a person involved before chasing someone about money.
+STAGE_INITIAL = "initial"
+STAGE_FOLLOWUP = "followup"
+
+# 適用段階 column values in the スプレッドシート.
+STAGE_ALL = "初回から"
+STAGE_FOLLOWUP_ONLY = "2通目以降"
+
 _DISC_SYSTEM = "あなたは不動産業務の法令遵守チェッカーです。指定されたJSON形式のみで回答してください。"
 
 _DISC_PROMPT = """\
@@ -38,11 +48,22 @@ _DISC_PROMPT = """\
 属性ワードが出るだけでは true にしない。
 「外国籍の方もご相談可能」「高齢の方は一度ご相談ください」は false とする。
 
+あわせて、苦情・不満・感情的な表現が含まれるかを判定してください。
+
+【苦情の判定基準】
+怒り・不信・非難・強い不満が表れている場合のみ complaint: true とする。
+費用・条件・空室状況などを単に質問しているだけでは false とする。
+　例：「初期費用はいくらですか」            → false
+　例：「初期費用が高すぎる。納得できません」 → true
+　例：「対応が遅くて困っています」           → true
+　例：「内見したいのですが可能でしょうか」   → false
+
 【対象テキスト】
 {text}
 
 【出力形式】JSONのみ。説明不要。
-{{"discriminatory": true/false, "reason": "判定理由（20字以内）"}}
+{{"discriminatory": true/false, "reason": "判定理由（20字以内）",
+  "complaint": true/false, "complaint_reason": "判定理由（20字以内）"}}
 """
 
 
@@ -59,30 +80,42 @@ class ContentChecker:
         self.reload_ng_words(ng_words)
 
     def reload_ng_words(self, ng_words: list[dict]) -> None:
-        """Refresh NG word list (called each poll cycle)."""
+        """Refresh NG word list (called each poll cycle).
+
+        The 適用段階 column lets a word apply only from the follow-up onward.
+        Cost words are set that way: asking the price is a routine first
+        enquiry, but the client wants a person involved before we chase
+        someone about money a second and third time.
+        """
         self._ng_words = [
             {"word": unicodedata.normalize("NFKC", w["ワード"]),
-             "category": w.get("カテゴリ", "その他")}
+             "category": w.get("カテゴリ", "その他"),
+             "stage": str(w.get("適用段階", "") or STAGE_ALL).strip()}
             for w in ng_words if w.get("ワード")
         ]
-        logger.debug("Loaded %d NG words", len(self._ng_words))
+        followup_only = sum(1 for w in self._ng_words if w["stage"] == STAGE_FOLLOWUP_ONLY)
+        logger.debug("Loaded %d NG words (%d follow-up only)",
+                     len(self._ng_words), followup_only)
 
-    def check(self, text: str) -> CheckResult:
+    def check(self, text: str, stage: str = STAGE_INITIAL) -> CheckResult:
         """
         Run both checks. Both always run, even when the NG scan already hit:
         the outcome is 要確認 either way, but the 要確認履歴 entry should record
         every reason the mail was held, not just the first one found.
+
+        `stage` selects which words apply — see reload_ng_words.
         """
         normalized = unicodedata.normalize("NFKC", text)
-        ng_hits = self._scan_ng(normalized)
-        disc, disc_reason = self._check_discriminatory(text)
+        ng_hits = self._scan_ng(normalized, stage)
+        disc, disc_reason, complaint, complaint_reason = self._check_context(text)
 
-        is_clean = not ng_hits and not disc
         return CheckResult(
-            is_clean=is_clean,
+            is_clean=not ng_hits and not disc and not complaint,
             ng_hits=ng_hits,
             discriminatory=disc,
             discriminatory_reason=disc_reason,
+            complaint=complaint,
+            complaint_reason=complaint_reason,
         )
 
     def check_generated(self, segments: list[str]) -> CheckResult:
@@ -99,14 +132,21 @@ class ContentChecker:
             # Nothing was generated for this mail, so there is nothing to screen.
             return CheckResult(is_clean=True, ng_hits=[], discriminatory=False,
                                discriminatory_reason="")
-        return self.check(text)
+        # Always the initial stage, whichever mail this is. The staged words
+        # describe what a *customer* is asking about; our own copy legitimately
+        # mentions 仲介手数料 when a listing is commission-free, and roughly half
+        # of generated intros do. Applying them here would block follow-ups the
+        # client has asked to keep sending automatically.
+        return self.check(text, stage=STAGE_INITIAL)
 
     # ── NG word scan ─────────────────────────────────────────────────────────
 
-    def _scan_ng(self, normalized_text: str) -> list[NGHit]:
+    def _scan_ng(self, normalized_text: str, stage: str = STAGE_INITIAL) -> list[NGHit]:
         hits: list[NGHit] = []
         seen: set[str] = set()
         for entry in self._ng_words:
+            if entry["stage"] == STAGE_FOLLOWUP_ONLY and stage == STAGE_INITIAL:
+                continue
             word_norm = entry["word"]
             if word_norm in normalized_text and word_norm not in seen:
                 hits.append(NGHit(word=entry["word"], category=entry["category"]))
@@ -117,17 +157,22 @@ class ContentChecker:
 
     # ── discriminatory expression check ──────────────────────────────────────
 
-    def _check_discriminatory(self, text: str) -> tuple[bool, str]:
+    def _check_context(self, text: str) -> tuple[bool, str, bool, str]:
         """
-        Returns (is_discriminatory, reason).
-        On API error defaults to (True, "判定エラー") — safe-fail to 要確認.
+        Judge both context questions in one call.
+
+        Returns (discriminatory, reason, complaint, complaint_reason).
+        On API error defaults to discriminatory=True — safe-fail to 要確認.
+
+        Both judgements ride on a single request: they read the same text, and
+        splitting them would double the per-mail API cost for no benefit.
         """
         prompt = _DISC_PROMPT.format(text=text[:2000])
         for attempt in range(3):
             try:
                 resp = self._client.messages.create(
                     model=self._model,
-                    max_tokens=150,
+                    max_tokens=250,
                     system=_DISC_SYSTEM,
                     messages=[{"role": "user", "content": prompt}],
                 )
@@ -135,12 +180,16 @@ class ContentChecker:
                 result = _parse_json_lenient(raw)
                 disc = bool(result.get("discriminatory", False))
                 reason = str(result.get("reason", ""))
+                complaint = bool(result.get("complaint", False))
+                complaint_reason = str(result.get("complaint_reason", ""))
                 if disc:
                     logger.info("Discriminatory expression detected: %s", reason)
-                return disc, reason
+                if complaint:
+                    logger.info("Complaint / dissatisfaction detected: %s", complaint_reason)
+                return disc, reason, complaint, complaint_reason
             except json.JSONDecodeError:
-                logger.warning("Discriminatory check attempt %d: JSON parse error", attempt + 1)
+                logger.warning("Context check attempt %d: JSON parse error", attempt + 1)
             except Exception as e:
-                logger.warning("Discriminatory check attempt %d error: %s", attempt + 1, e)
-        logger.error("Discriminatory check failed after 3 attempts — defaulting to requires_review")
-        return True, "判定エラー（要確認）"
+                logger.warning("Context check attempt %d error: %s", attempt + 1, e)
+        logger.error("Context check failed after 3 attempts — defaulting to requires_review")
+        return True, "判定エラー（要確認）", False, ""

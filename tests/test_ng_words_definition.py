@@ -17,7 +17,10 @@ from load_ng_words import load_definition
 
 _DEF = Path(__file__).parent.parent / "config" / "ng_words.yaml"
 _DATA = yaml.safe_load(io.open(_DEF, encoding="utf-8"))
-_WORDS = {w for w, _ in load_definition()}
+_ALL = load_definition()
+_WORDS = {w for w, _, _ in _ALL}
+_ALWAYS = {w for w, _, st in _ALL if st == "初回から"}
+_FOLLOWUP_ONLY = {w for w, _, st in _ALL if st == "2通目以降"}
 
 # Fixed text the client supplied — the AI never writes it, and it must never
 # be able to trip the NG scan.
@@ -41,7 +44,7 @@ class TestCoverage(unittest.TestCase):
         self.assertGreater(len(_WORDS), 100)
 
     def test_no_duplicates(self):
-        words = [w for w, _ in load_definition()]
+        words = [w for w, _, _ in _ALL]
         self.assertEqual(len(words), len(set(words)))
 
     def test_key_risk_words_present(self):
@@ -65,18 +68,39 @@ class TestAttributeWordsExcluded(unittest.TestCase):
             self.assertTrue(entry["reason"].strip(), "除外理由が未記載")
 
 
-class TestNoWordCollidesWithFixedText(unittest.TestCase):
-    """A word that appears in the client's own template would deadlock sending."""
+class TestFollowupOnlyStaging(unittest.TestCase):
+    """Cost words apply from the 2nd mail onward, not the 1st (client, 2026-08-21)."""
 
-    def test_no_definition_word_appears_in_the_fixed_template(self):
-        colliding = sorted(w for w in _WORDS if w in _FIXED_TEXT)
+    def test_cost_words_are_followup_only(self):
+        for w in ("初期費用", "仲介手数料", "礼金", "敷金", "保証料",
+                  "火災保険料", "鍵交換費用", "日割り"):
+            self.assertIn(w, _FOLLOWUP_ONLY, w)
+            self.assertNotIn(w, _ALWAYS, w)
+
+    def test_dispute_words_still_apply_from_the_first_mail(self):
+        for w in ("請求ミス", "過剰請求", "ぼったくり", "値下げ", "家賃交渉", "高すぎる"):
+            self.assertIn(w, _ALWAYS, w)
+
+    def test_hayaku_is_now_included(self):
+        # Client asked to keep 早く as 要確認 for now, reviewable later.
+        self.assertIn("早く", _ALWAYS)
+
+
+class TestNoAlwaysOnWordCollidesWithFixedText(unittest.TestCase):
+    """A first-mail word inside the client's own template would deadlock sending.
+
+    The cost words deliberately DO appear there, which is exactly why they are
+    staged to the follow-up and why the draft scan reads only AI-written text.
+    """
+
+    def test_no_always_on_word_appears_in_the_fixed_template(self):
+        colliding = sorted(w for w in _ALWAYS if w in _FIXED_TEXT)
         self.assertEqual(colliding, [],
-                         f"固定文に含まれる語は使えません: {colliding}")
+                         f"固定文に含まれる語は初回から適用できません: {colliding}")
 
-    def test_the_known_offenders_are_excluded(self):
-        # These are exactly why the collision rule exists.
+    def test_cost_words_are_in_the_template_hence_staged(self):
         self.assertIn("初期費用", _FIXED_TEXT)
-        self.assertNotIn("初期費用", _WORDS)
+        self.assertIn("初期費用", _FOLLOWUP_ONLY)
 
 
 if __name__ == "__main__":

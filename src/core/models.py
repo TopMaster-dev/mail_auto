@@ -40,6 +40,10 @@ class Property:
     is_commission_free: bool
     area_sqm: float
     building_type: str
+    # Formal building/room name from the `buildname` taxonomy, e.g. オリーブ_201.
+    # `name` is the site's marketing title (「都市の利便性」); portals such as
+    # SUUMO identify a property by this formal name instead.
+    building_name: str = ""
 
     @property
     def rent_total(self) -> int:
@@ -58,6 +62,10 @@ class CheckResult:
     ng_hits: list[NGHit]
     discriminatory: bool
     discriminatory_reason: str
+    # A cost question on its own is routine, but the same words wrapped in
+    # anger or dissatisfaction need a person. Judged by context, not keywords.
+    complaint: bool = False
+    complaint_reason: str = ""
 
     @property
     def requires_review(self) -> bool:

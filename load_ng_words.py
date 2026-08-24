@@ -22,7 +22,9 @@ from src.config_loader import load_config
 from src.integrations.sheets_client import SheetsClient
 
 _DEF = Path(__file__).parent / "config" / "ng_words.yaml"
-_HEADER = ["ワード", "カテゴリ"]
+_HEADER = ["ワード", "カテゴリ", "適用段階"]
+_STAGE_ALL = "初回から"
+_STAGE_FOLLOWUP = "2通目以降"
 
 
 def _console():
@@ -32,9 +34,14 @@ def _console():
         pass
 
 
-def load_definition() -> list[tuple[str, str]]:
+def load_definition() -> list[tuple[str, str, str]]:
+    """Return (word, category, stage) for every defined word."""
     data = yaml.safe_load(io.open(_DEF, encoding="utf-8"))
-    return [(w, cat) for cat, words in data["categories"].items() for w in words]
+    rows = [(w, cat, _STAGE_ALL)
+            for cat, words in data["categories"].items() for w in words]
+    rows += [(w, cat, _STAGE_FOLLOWUP)
+             for cat, words in (data.get("followup_only") or {}).items() for w in words]
+    return rows
 
 
 def main() -> None:
@@ -53,15 +60,20 @@ def main() -> None:
 
     ws = sheets._ws("ng_words")
     existing_rows = ws.get_all_values()
-    existing = {r[0].strip(): (r[1].strip() if len(r) > 1 else "")
+    existing = {r[0].strip(): ((r[1].strip() if len(r) > 1 else ""),
+                               (r[2].strip() if len(r) > 2 else _STAGE_ALL))
                 for r in existing_rows[1:] if r and r[0].strip()}
 
-    merged: dict[str, str] = dict(existing)
-    added = []
-    for word, category in defined:
+    merged: dict[str, tuple[str, str]] = dict(existing)
+    added, restaged = [], []
+    for word, category, stage in defined:
         if word not in merged:
-            merged[word] = category
+            merged[word] = (category, stage)
             added.append((word, category))
+        elif merged[word][1] != stage:
+            # The definition owns the stage; a re-run corrects a drifted value.
+            merged[word] = (merged[word][0] or category, stage)
+            restaged.append((word, stage))
 
     kept_manual = [w for w in existing if w not in {d[0] for d in defined}]
 
@@ -69,7 +81,11 @@ def main() -> None:
     print(f"定義ファイル    : {len(defined)} 語")
     print(f"新規追加        : {len(added)} 語")
     print(f"手動追加を維持  : {len(kept_manual)} 語  {kept_manual if kept_manual else ''}")
+    print(f"段階変更        : {len(restaged)} 語  "
+          f"{[w for w, _ in restaged] if restaged else ''}")
     print(f"適用後の合計    : {len(merged)} 語")
+    print(f"  うち2通目以降 : "
+          f"{sum(1 for _, st in merged.values() if st == _STAGE_FOLLOWUP)} 語")
 
     if added:
         print("\n追加される語（カテゴリ別）:")
@@ -79,6 +95,8 @@ def main() -> None:
         for cat, words in by_cat.items():
             print(f"  [{cat}] {'、'.join(words)}")
 
+    if not added and not restaged:
+        print("\n変更はありません。")
     if not args.apply:
         print("\n※ ドライラン。書き込むには --apply を付けて実行してください。")
         return
@@ -90,7 +108,7 @@ def main() -> None:
 
     rows = [_HEADER]
     order = [c for c in yaml.safe_load(io.open(_DEF, encoding="utf-8"))["categories"]]
-    rows += sorted(([w, c] for w, c in merged.items()),
+    rows += sorted(([w, c, st] for w, (c, st) in merged.items()),
                    key=lambda r: (order.index(r[1]) if r[1] in order else len(order), r[0]))
 
     ws.clear()
