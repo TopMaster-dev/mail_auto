@@ -191,7 +191,10 @@ class EmailAssembler:
             commission = "\n※弊社でのご成約の場合、仲介手数料無料でご案内させていただいております。\n" if prop.is_commission_free else ""
             prop_block = (
                 f"◆お問い合わせ物件\n"
-                f"物件名：{prop.name}\n"
+                # The formal name as it appeared in the enquiry. The post title
+                # is marketing copy and is not what the customer saw on the
+                # portal. Recommendations below keep their titles, as asked.
+                f"物件名：{inquiry.inquiry_property_name or prop.name}\n"
                 f"{prop.url}\n"
                 f"{_INITIAL_COST_NOTE}{commission}\n\n"
                 f"{property_intro}\n"

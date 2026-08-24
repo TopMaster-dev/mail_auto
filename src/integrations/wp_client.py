@@ -1,6 +1,8 @@
 from __future__ import annotations
 import logging
+import re
 import time
+import unicodedata
 from typing import Any
 
 import requests
@@ -9,6 +11,23 @@ from requests.auth import HTTPBasicAuth
 from src.core.models import Property
 
 logger = logging.getLogger(__name__)
+
+# Taxonomy holding the formal property name, e.g. オリーブ_201. The post title is
+# marketing copy, so this is the only field a portal's 物件名 can be matched to.
+_BUILDNAME_TAX = "buildname"
+
+# Trailing room number: オリーブ201 -> オリーブ, EIGHT BASEC棟2 -> EIGHT BASEC棟
+_ROOM_SUFFIX = re.compile(r"\d+$")
+
+
+def formal_key(name: str) -> str:
+    """Comparison key for a formal property name.
+
+    SUUMO writes 建物名+部屋番号, WordPress writes 建物名_部屋番号, and roman
+    numerals differ (Ⅲ vs III) — NFKC plus separator removal folds all of it.
+    """
+    folded = unicodedata.normalize("NFKC", name or "")
+    return re.sub(r"[\s_・･\-—―]", "", folded).lower()
 
 
 def _int(val, default: int = 0) -> int:
@@ -93,6 +112,47 @@ class WordPressClient:
                 return p
         return None
 
+    def resolve_by_formal_name(self, name: str) -> tuple[Property | None, str]:
+        """Resolve a portal-supplied formal name such as サンステージエクセル203.
+
+        Returns (property, display_name). A room-level match wins. Failing that
+        the building is matched and the room number dropped from the display
+        name, per the client's instruction to introduce the building without
+        referring to a room we cannot confirm.
+
+        A vacant listing is preferred when several rooms in a building match, so
+        the mail does not offer something already taken.
+        """
+        key = formal_key(name)
+        if not key:
+            return None, ""
+
+        exact = [p for p in self._properties if formal_key(p.building_name) == key]
+        if exact:
+            return self._best(exact), name.strip()
+
+        stem = _ROOM_SUFFIX.sub("", key)
+        if not stem or stem == key:
+            return None, ""
+
+        # Only a trailing room number may differ — never a longer building name.
+        # The remainder may also be empty: some buildings are registered without
+        # a room number at all (EIGHT BASEC棟), which is still a building match.
+        same_building = [
+            p for p in self._properties
+            if (rest := formal_key(p.building_name))[:len(stem)] == stem
+            and (rest[len(stem):] == "" or rest[len(stem):].isdigit())
+        ]
+        if not same_building:
+            return None, ""
+        display = _ROOM_SUFFIX.sub("", unicodedata.normalize("NFKC", name)).strip(" _-・")
+        return self._best(same_building), display
+
+    @staticmethod
+    def _best(candidates: list[Property]) -> Property:
+        """Prefer a vacant, priced listing; otherwise the first match."""
+        return next((p for p in candidates if p.is_vacant and p.rent > 0), candidates[0])
+
     def get_property_by_name(self, name: str) -> Property | None:
         """Fuzzy name match — returns best match or None."""
         name_lower = name.strip().lower()
@@ -105,7 +165,7 @@ class WordPressClient:
 
     # Only fetch fields we actually use — avoids MemoryError on large ACF + yoast payloads
     _ESTATE_FIELDS = (
-        "id,title,link,acf,"
+        "id,title,link,acf,buildname,"
         "train,area,space,condition1,condition2,"
         "room_category,cat2,building,economical,"
         "structure,contract_type,display_condition"
@@ -132,6 +192,7 @@ class WordPressClient:
         all_slugs.add(self._tcfg.get("train_line", "train"))
         all_slugs.add(self._tcfg.get("area", "area"))
         all_slugs.add(self._tcfg.get("building_type", "building"))
+        all_slugs.add(_BUILDNAME_TAX)
         for s in self._tcfg.get("category", []):
             all_slugs.add(s)
 
@@ -237,4 +298,5 @@ class WordPressClient:
             is_commission_free=is_commission_free,
             area_sqm=_float(acf_get("area_sqm", 0.0)),
             building_type=building_names[0] if building_names else (acf.get("buildType") or ""),
+            building_name=(tax_names(_BUILDNAME_TAX) or [""])[0],
         )

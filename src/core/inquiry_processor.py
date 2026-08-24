@@ -24,6 +24,9 @@ logger = logging.getLogger(__name__)
 # unparseable. It is truthy, so it used to be stored verbatim.
 _EARLIEST_PLAUSIBLE_YEAR = 2000
 
+# 問い合わせ物件 column, rewritten when a portal name resolves to a building.
+_PROPERTY_NAME_COL = 5
+
 # The AI-written 来店誘導前の一言 (spec 7-3) was withdrawn on the client's
 # instruction: the generated sentence read unnaturally and they asked for it
 # to be dropped outright rather than replaced. Set True to reinstate.
@@ -156,14 +159,15 @@ class InquiryProcessor:
             inquiry.ng_category = body_check.ng_hits[0].category if body_check.ng_hits else ""
             self._sheets.update_status(inquiry.id, "NG検出")
             ng_str = ", ".join(h.word for h in body_check.ng_hits)
-            reason = body_check.discriminatory_reason or ""
+            reason = " / ".join(r for r in (body_check.discriminatory_reason,
+                                            body_check.complaint_reason) if r)
             self._sheets.write_review_log(inquiry.id,
                                           f"受信メールNG: {reason}", ng_str)
             logger.info("Inquiry %s → NG検出 (incoming body)", inquiry.id)
             return
 
         # ── Step 5: property lookup ──────────────────────────────────────────
-        matched, is_vacant = self._lookup_property(inquiry)
+        matched, is_vacant = self._lookup_property(inquiry, reflection)
         inquiry.matched_property = matched
         inquiry.is_vacant = is_vacant
         # Initial row was written before lookup — update 空室有無 once we know it
@@ -279,10 +283,31 @@ class InquiryProcessor:
             area_sqm=0.0, building_type="",
         )
 
-    def _lookup_property(self, inquiry: Inquiry) -> tuple[Property | None, bool | None]:
+    def _lookup_property(self, inquiry: Inquiry,
+                         reflection: Reflection | None = None
+                         ) -> tuple[Property | None, bool | None]:
+        """Find the listing the customer asked about.
+
+        Portal mail carries no link to our site — it identifies a property by
+        its formal name (サンステージエクセル203), which lives in the buildname
+        taxonomy rather than the post title. When only the building matches,
+        the room number is dropped from the display name so the reply
+        introduces the building without naming a room we cannot confirm.
+        """
         prop = None
         if inquiry.inquiry_property_url:
             prop = self._wp.get_property_by_url(inquiry.inquiry_property_url)
+
+        if prop is None and inquiry.inquiry_property_name:
+            prop, display = self._wp.resolve_by_formal_name(inquiry.inquiry_property_name)
+            if prop is not None:
+                if display and display != inquiry.inquiry_property_name:
+                    logger.info("Matched %s at building level → %s",
+                                inquiry.inquiry_property_name, display)
+                    inquiry.inquiry_property_name = display
+                self._sheets.update_inquiry_field(
+                    inquiry.id, _PROPERTY_NAME_COL, inquiry.inquiry_property_name)
+
         if prop is None and inquiry.inquiry_property_name:
             prop = self._wp.get_property_by_name(inquiry.inquiry_property_name)
 
