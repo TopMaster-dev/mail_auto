@@ -44,6 +44,12 @@ class Property:
     # `name` is the site's marketing title (「都市の利便性」); portals such as
     # SUUMO identify a property by this formal name instead.
     building_name: str = ""
+    # Attribute matching relies on these because portals and the site write
+    # building names in different scripts. Coverage differs sharply:
+    # space 99%, layout 100%, access 99%, room 74%, rent 74%, address 29%.
+    room_number: str = ""      # acf.floor, e.g. 205（2階部分）-> 205
+    address: str = ""          # acf.location (sparse)
+    access: str = ""           # acf.access, carries 沿線「駅」徒歩N分
 
     @property
     def rent_total(self) -> int:

@@ -20,6 +20,12 @@ _BUILDNAME_TAX = "buildname"
 _ROOM_SUFFIX = re.compile(r"\d+$")
 
 
+def _room_number(floor: str | None) -> str:
+    """`205（2階部分）` -> `205`. The room lives in its own field, not the name."""
+    text = unicodedata.normalize("NFKC", str(floor or "")).strip()
+    return re.split(r"[(（\s]", text, maxsplit=1)[0].strip()
+
+
 def formal_key(name: str) -> str:
     """Comparison key for a formal property name.
 
@@ -27,7 +33,9 @@ def formal_key(name: str) -> str:
     numerals differ (Ⅲ vs III) — NFKC plus separator removal folds all of it.
     """
     folded = unicodedata.normalize("NFKC", name or "")
-    return re.sub(r"[\s_・･\-—―]", "", folded).lower()
+    # ・ is kept: dropping it turned bonitorosa Ⅰ・Ⅱ into bonitorosaIII, which
+    # collides with the genuinely different bonitorosa Ⅲ.
+    return re.sub(r"[\s_\-—―]", "", folded).lower()
 
 
 def _int(val, default: int = 0) -> int:
@@ -102,6 +110,11 @@ class WordPressClient:
         logger.info("Loaded %d properties (%d vacant)",
                     len(self._properties),
                     sum(1 for p in self._properties if p.is_vacant))
+        return self._properties
+
+    @property
+    def properties(self) -> list[Property]:
+        """Listings loaded at startup."""
         return self._properties
 
     def get_property_by_url(self, url: str) -> Property | None:
@@ -299,4 +312,7 @@ class WordPressClient:
             area_sqm=_float(acf_get("area_sqm", 0.0)),
             building_type=building_names[0] if building_names else (acf.get("buildType") or ""),
             building_name=(tax_names(_BUILDNAME_TAX) or [""])[0],
+            room_number=_room_number(acf.get("floor")),
+            address=str(acf.get("location") or "").strip(),
+            access=str(acf.get("access") or "").strip(),
         )

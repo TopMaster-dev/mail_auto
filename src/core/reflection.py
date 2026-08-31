@@ -92,6 +92,7 @@ def _parse_suumo(body: str) -> Reflection:
             "所在地": _field(body, "所在地"),
             "賃料": _field(body, "賃料"),
             "間取り": _field(body, "間取り"),
+            "専有面積": _field(body, "専有面積"),
             "電話番号": _field(body, "TEL", "ＴＥＬ", "電話番号"),
         },
     )

@@ -15,7 +15,7 @@ from src.email_builder.send_gate import (
 from src.integrations.gmail_client import GmailClient
 from src.integrations.sheets_client import SheetsClient
 from src.integrations.wp_client import WordPressClient
-from src.matching import area
+from src.matching import area, portal_matcher
 from src.matching.property_scorer import PropertyScorer
 
 logger = logging.getLogger(__name__)
@@ -298,15 +298,27 @@ class InquiryProcessor:
         if inquiry.inquiry_property_url:
             prop = self._wp.get_property_by_url(inquiry.inquiry_property_url)
 
+        display = ""
         if prop is None and inquiry.inquiry_property_name:
             prop, display = self._wp.resolve_by_formal_name(inquiry.inquiry_property_name)
-            if prop is not None:
-                if display and display != inquiry.inquiry_property_name:
-                    logger.info("Matched %s at building level → %s",
-                                inquiry.inquiry_property_name, display)
-                    inquiry.inquiry_property_name = display
-                self._sheets.update_inquiry_field(
-                    inquiry.id, _PROPERTY_NAME_COL, inquiry.inquiry_property_name)
+
+        # Name matching only works when both sides use the same script. Roughly
+        # half the site's building names are romaji or mixed while portals send
+        # katakana, so fall back to the attributes the reflection carries.
+        if prop is None and reflection is not None:
+            found = portal_matcher.match(reflection, self._wp.properties)
+            if found is not None:
+                prop, display = found.prop, found.display_name
+                logger.info("Inquiry %s matched by attributes (%s)",
+                            inquiry.id, found.basis)
+
+        if prop is not None:
+            if display and display != inquiry.inquiry_property_name:
+                logger.info("Display name adjusted: %s → %s",
+                            inquiry.inquiry_property_name, display)
+                inquiry.inquiry_property_name = display
+            self._sheets.update_inquiry_field(
+                inquiry.id, _PROPERTY_NAME_COL, inquiry.inquiry_property_name)
 
         if prop is None and inquiry.inquiry_property_name:
             prop = self._wp.get_property_by_name(inquiry.inquiry_property_name)
