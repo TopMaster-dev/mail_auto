@@ -129,6 +129,7 @@ class Inquiry:
             fmt_dt(self.sent_at),
             self.followup_count,
             self.staff_memo,
+            self.message_id,
         ]
 
     @classmethod
@@ -139,7 +140,7 @@ class Inquiry:
             "ステータス", "AI返信文案", "自動送信可否",
             "NGワード", "NGカテゴリ", "差別表現判定理由",
             "追客ステータス", "次回追客予定日", "送信日時",
-            "追客回数", "担当者メモ",
+            "追客回数", "担当者メモ", "受信メッセージID",
         ]
 
     @classmethod

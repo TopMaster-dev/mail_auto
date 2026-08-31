@@ -105,17 +105,26 @@ class InquiryProcessor:
         logger.info("Fetched %d unread email(s)", len(emails))
 
         auto_conditions = self._sheets.read_auto_send_conditions()
+        try:
+            seen_ids = self._sheets.read_seen_message_ids()
+        except Exception as e:
+            # Without the set we cannot dedup; process anyway rather than
+            # drop real inquiries, but say so.
+            logger.error("Could not read recorded Message-IDs (%s) — "
+                         "duplicate protection is off this cycle", e)
+            seen_ids = set()
 
         for raw in emails:
             try:
-                self._process_one(raw, auto_conditions)
+                self._process_one(raw, auto_conditions, seen_ids)
             except Exception as e:
                 logger.exception("Unhandled error processing email uid=%s: %s",
                                  raw.get("uid"), e)
 
         logger.info("─── Poll cycle end ───")
 
-    def _process_one(self, raw: dict, auto_conditions: dict) -> None:
+    def _process_one(self, raw: dict, auto_conditions: dict,
+                     seen_ids: set[str] | None = None) -> None:
         # ── Step 1: reply detection ──────────────────────────────────────────
         in_reply_to = raw.get("in_reply_to", "").strip()
         if in_reply_to:
@@ -136,8 +145,18 @@ class InquiryProcessor:
                         raw.get("from_addr"), (raw.get("subject") or "")[:60])
             return
 
+        # Already recorded? Re-reading the same mail must not create a second
+        # row — sending both would mail the customer the identical reply twice.
+        message_id = (raw.get("message_id") or "").strip()
+        if message_id and seen_ids and message_id in seen_ids:
+            logger.info("Already recorded, skipping: %s (%s)",
+                        message_id, (raw.get("subject") or "")[:40])
+            return
+
         inquiry = self._build_inquiry(raw, reflection)
         logger.info("Processing inquiry %s from %s", inquiry.id, inquiry.customer_email)
+        if message_id and seen_ids is not None:
+            seen_ids.add(message_id)
 
         # ── Step 3: write initial row ────────────────────────────────────────
         self._sheets.write_inquiry(inquiry)

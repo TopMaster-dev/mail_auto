@@ -38,6 +38,7 @@ _NEXT_FOLLOWUP_COL = 15 # "次回追客予定日"
 _SENT_COL = 16          # "送信日時"
 _FOLLOWUP_COUNT_COL = 17  # "追客回数"
 _MEMO_COL = 18          # "担当者メモ"
+_MESSAGE_ID_COL = 19    # "受信メッセージID" — dedup key for reprocessed mail
 
 
 class SheetsClient:
@@ -208,6 +209,18 @@ class SheetsClient:
         return ids[row_idx] if row_idx < len(ids) else None
 
     # ── inquiry reads (admin panel + scheduler) ──────────────────────────────
+
+    def read_seen_message_ids(self) -> set[str]:
+        """Message-IDs already recorded, so a re-read mail is not written twice.
+
+        Mail is normally consumed once (fetch marks it seen), but anything that
+        returns it to unread — an operator re-testing, a flag that fails to
+        stick — would otherwise create a second row, and sending both would mail
+        the customer the same reply twice.
+        """
+        ws = self._ws("inquiries")
+        values = self._retry(lambda: ws.col_values(_MESSAGE_ID_COL))
+        return {v.strip() for v in values[1:] if v and v.strip()}
 
     def read_inquiries(self) -> list[dict]:
         """Return all inquiry rows as dicts (keys = headers)."""
