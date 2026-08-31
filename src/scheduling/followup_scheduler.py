@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 from apscheduler.schedulers.background import BackgroundScheduler
 
 from src.core.models import Inquiry, Property
+from src.email_builder import followup_blocks
 from src.email_builder.assembler import EmailAssembler
 from src.core.inquiry_processor import _INCLUDE_VISIT_INVITATION
 from src.email_builder.send_gate import is_business_hours
@@ -132,7 +133,10 @@ class FollowupScheduler:
         assembler = EmailAssembler(self._company, is_business_hours())
         build = (assembler.build_second_mail_parts if mail_type == "2nd"
                  else assembler.build_third_mail_parts)
-        subject, body_plain = build(inquiry, intro, invitation, alt_intros)
+        # 電話不在時パターン: only when the operator has recorded a call in 担当者メモ.
+        after_call = followup_blocks.called_before_followup(inquiry.staff_memo)
+        subject, body_plain = build(inquiry, intro, invitation, alt_intros,
+                                    after_call)
 
         # Follow-up bodies are freshly generated AI text. They used to go out
         # without ever passing the NG / discriminatory-expression screen that

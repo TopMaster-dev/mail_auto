@@ -1,7 +1,10 @@
 from __future__ import annotations
 from datetime import datetime
 
+import re
+
 from src.core.models import Inquiry, Property
+from src.email_builder import followup_blocks as fb
 
 
 _SIGNATURE = """\
@@ -105,16 +108,11 @@ class EmailAssembler:
 
     def build_second_mail_parts(self, inquiry: Inquiry, property_intro: str,
                                 visit_invitation: str,
-                                alt_intros: list[tuple[Property, str]]) -> tuple[str, str]:
+                                alt_intros: list[tuple[Property, str]],
+                                after_call: bool = False) -> tuple[str, str]:
         """Return (subject, plain_body) — the plain body is what the NG scan reads."""
-        preamble = (
-            "先日はお問い合わせ誠にありがとうございます。\n"
-            f"レントマガジン株式会社の{self._staff_name}と申します。\n\n"
-            "その後、ご検討のほどはいかがでしょうか。\n"
-            "まだご案内のご予定が決まっていないようでしたら、ぜひご検討いただけますと幸いです。"
-        )
-        return self._followup_parts(
-            inquiry, preamble, property_intro, visit_invitation, alt_intros)
+        return self._followup_parts(inquiry, "2nd", property_intro, alt_intros,
+                                    after_call)
 
     def build_second_mail(self, inquiry: Inquiry, property_intro: str,
                           visit_invitation: str,
@@ -125,19 +123,11 @@ class EmailAssembler:
 
     def build_third_mail_parts(self, inquiry: Inquiry, property_intro: str,
                                visit_invitation: str,
-                               alt_intros: list[tuple[Property, str]]) -> tuple[str, str]:
+                               alt_intros: list[tuple[Property, str]],
+                               after_call: bool = False) -> tuple[str, str]:
         """Return (subject, plain_body) — the plain body is what the NG scan reads."""
-        preamble = (
-            "先日はお問い合わせ誠にありがとうございます。\n"
-            f"レントマガジン株式会社の{self._staff_name}と申します。\n\n"
-            "改めてご連絡させていただきました。\n"
-            "実際にご来店・ご内覧いただくお客様の中には、写真では分かりにくい広さや周辺環境、"
-            "日当たり、同条件の比較物件なども確認される方が多いです。\n"
-            "「まずは比較してみたい」という段階でも大丈夫ですので、"
-            "ご希望に近いお部屋をいくつかあわせてご案内させていただければと思います。"
-        )
-        return self._followup_parts(
-            inquiry, preamble, property_intro, visit_invitation, alt_intros)
+        return self._followup_parts(inquiry, "3rd", property_intro, alt_intros,
+                                    after_call)
 
     def build_third_mail(self, inquiry: Inquiry, property_intro: str,
                          visit_invitation: str,
@@ -146,15 +136,92 @@ class EmailAssembler:
             inquiry, property_intro, visit_invitation, alt_intros)
         return subject, self._wrap_html(body)
 
-    def _followup_parts(self, inquiry: Inquiry, preamble: str, property_intro: str,
-                        visit_invitation: str,
-                        alt_intros: list[tuple[Property, str]]) -> tuple[str, str]:
-        subject = f"【{inquiry.inquiry_property_name}】先日はお問い合わせありがとうございます！"
-        body = preamble + "\n\n" + self._select_body(
-            inquiry, property_intro, visit_invitation, alt_intros)
-        return subject, body
+    def _followup_parts(self, inquiry: Inquiry, kind: str, property_intro: str,
+                        alt_intros: list[tuple[Property, str]],
+                        after_call: bool = False) -> tuple[str, str]:
+        """Assemble a 2nd or 3rd follow-up from the client's template.
 
-    # ── private builders ─────────────────────────────────────────────────────
+        The two differ only in their lead paragraph: the 2nd re-confirms a
+        viewing, the 3rd shifts towards comparing similar rooms. Everything
+        after that is shared.
+        """
+        name = inquiry.inquiry_property_name
+        subject = f"【{name}】先日はお問い合わせありがとうございます！"
+
+        opening = (fb.OPENING_AFTER_CALL.format(staff=self._staff_name, property_name=name)
+                   if after_call
+                   else fb.OPENING_NORMAL.format(staff=self._staff_name))
+        if after_call:
+            # The opening has already named the property and said why we write.
+            lead = (fb.SECOND_LEAD_AFTER_CALL if kind == "2nd"
+                    else fb.THIRD_LEAD_AFTER_CALL)
+        else:
+            lead = (fb.SECOND_LEAD if kind == "2nd" else fb.THIRD_LEAD).format(
+                property_name=name)
+
+        prop = inquiry.matched_property
+        body = [self._header_name(inquiry.customer_name), opening, lead]
+
+        if prop is not None and inquiry.is_vacant:
+            body += [fb.PROPERTY_BLOCK.format(name=name, url=prop.url), property_intro]
+        else:
+            body.append(self._alt_section(alt_intros))
+
+        body += [fb.VIEWING_PROMPT,
+                 "\n".join(fb.proposed_slots()),
+                 fb.SCHEDULE_FALLBACK.format(name=inquiry.customer_name),
+                 fb.MEETING]
+
+        station = self._station_line(prop)
+        if station:
+            body.append(station)
+
+        body.append(fb.PHONE_BOOKING.format(tel=self._co.get("tel_reservation", "")))
+        body.append(
+            fb.COMMISSION_FREE if (prop is not None and prop.is_commission_free)
+            else fb.DISCOUNT.format(url=self._co.get("discount_url", "")))
+        body += [fb.WEB_MEMBER.format(url=self._co.get("mypage_url", "")),
+                 fb.CONDITIONS,
+                 fb.LINE_INVITE.format(url=self._co.get("line_url", "")),
+                 fb.CLOSING]
+
+        if not self._in_hours:
+            body.append(_OUT_OF_HOURS_NOTE)
+        body.append(_SIGNATURE)
+        return subject, _join_blocks(body)
+
+    def _header_name(self, customer_name: str) -> str:
+        return f"{customer_name}様"
+
+    @staticmethod
+    def _station_line(prop: Property | None) -> str:
+        """`名鉄本線「牛田」徒歩20分` -> the 【最寄駅】 line of the template."""
+        if prop is None:
+            return ""
+        source = prop.access or ""
+        m = re.search(r"([^「\r\n]+)「([^」]+)」", source)
+        if m:
+            return fb.NEAREST_STATION.format(line=m.group(1).strip(),
+                                             station=m.group(2).strip())
+        if prop.train_line:
+            return fb.NEAREST_STATION.format(line=prop.train_line,
+                                             station=prop.nearest_station or "")
+        return ""
+
+    def _alt_section(self, alt_intros: list[tuple[Property, str]]) -> str:
+        """Alternatives block for a follow-up when the room is unavailable."""
+        if not alt_intros:
+            return "ご希望に近いお部屋をお探ししております。"
+        blocks = []
+        for prop, intro in alt_intros:
+            free = "（仲介手数料無料）" if prop.is_commission_free else ""
+            blocks.append(
+                f"◆おすすめ物件{free}\n"
+                f"物件名：{prop.name}\n"
+                f"{prop.url}\n\n"
+                f"{intro}"
+            )
+        return "\n\n".join(blocks) + f"\n\n{_INITIAL_COST_NOTE}"
 
     @property
     def _staff_name(self) -> str:
