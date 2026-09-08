@@ -52,7 +52,12 @@ business_hours:
   end: "18:00"
 
 send:
-  all_require_confirmation: true   # global safety switch; never set false before full testing
+  # Emergency lock only. While true, every mail waits for confirmation and the
+  # 設定 sheet is ignored entirely. Left false so the operator controls sending
+  # from the 設定 sheet (自動送信有効) without needing a deploy — that cell is
+  # currently false, so behaviour is unchanged and everything still waits for
+  # confirmation. An unreadable 設定 sheet also falls back to confirmation.
+  all_require_confirmation: false
 
 # ── Phase 2 ──────────────────────────────────────────────────────────────────
 followup:

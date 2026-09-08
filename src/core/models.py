@@ -100,7 +100,10 @@ class Inquiry:
     ng_category: str = ""
     discriminatory_flag: bool = False
     discriminatory_reason: str = ""
-    followup_status: str = "追客中"
+    # Not 追客中: follow-up only starts once a first mail has actually been sent
+    # (schedule_followup). Defaulting to 追客中 made every untouched row read on
+    # the admin screen as an active follow-up sequence.
+    followup_status: str = "未送信"
     next_followup_at: Optional[datetime] = None
     sent_at: Optional[datetime] = None
     send_message_id: str = ""
@@ -180,7 +183,7 @@ class Inquiry:
             status=str(rec.get("ステータス", "")).strip(),
             is_vacant=is_vacant,
             ai_draft=str(rec.get("AI返信文案", "")),
-            followup_status=str(rec.get("追客ステータス", "")).strip() or "追客中",
+            followup_status=str(rec.get("追客ステータス", "")).strip() or "未送信",
             next_followup_at=_dt(rec.get("次回追客予定日")),
             sent_at=_dt(rec.get("送信日時")),
             followup_count=followup_count,

@@ -3,6 +3,7 @@ import logging
 import smtplib
 import time
 import unicodedata
+from datetime import date, timedelta
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from typing import Generator
@@ -10,6 +11,11 @@ from typing import Generator
 from imap_tools import MailBox, AND, MailMessage
 
 logger = logging.getLogger(__name__)
+
+# How far back each poll looks. Ingestion is keyed on Message-ID rather than on
+# the unread flag, so a mail someone opened first is still picked up; this
+# window only bounds how much of the mailbox is re-scanned each cycle.
+_LOOKBACK_DAYS = 7
 
 
 class GmailClient:
@@ -23,9 +29,9 @@ class GmailClient:
 
     # ── receive ─────────────────────────────────────────────────────────────
 
-    def fetch_unread(self) -> list[dict]:
+    def fetch_recent(self) -> list[dict]:
         """
-        Connect → fetch all unread → disconnect.
+        Connect → fetch the last _LOOKBACK_DAYS of mail → disconnect.
         Returns normalised dicts ready for InquiryProcessor.
         Retries up to 3 times with exponential backoff on connection errors.
         """
@@ -42,15 +48,23 @@ class GmailClient:
 
     def _do_fetch(self) -> list[dict]:
         results: list[dict] = []
+        since = date.today() - timedelta(days=_LOOKBACK_DAYS)
         with MailBox(self._imap_host).login(self._address, self._password) as mb:
-            for msg in mb.fetch(AND(seen=False), mark_seen=True, bulk=True):
+            # Deliberately not filtered on seen=False, and deliberately not
+            # marking anything seen. Reflections were being lost outright: staff
+            # opened a 反響 in the mailbox before the poller ran, seen=False then
+            # excluded it, and it could never be ingested afterwards. Marking
+            # seen was unsafe on its own too — the batch is flagged before any
+            # row is written, so an error mid-cycle discarded the mail for good.
+            # Duplicate protection is the Message-ID check in InquiryProcessor,
+            # which survives both cases.
+            for msg in mb.fetch(AND(date_gte=since), mark_seen=False, bulk=True):
                 try:
                     results.append(self._parse(msg))
                 except Exception as e:
-                    # One malformed message must not abort the whole batch
-                    # (the batch is already marked seen, so aborting loses all of it).
+                    # One malformed message must not abort the whole batch.
                     logger.error("Failed to parse message uid=%s: %s", msg.uid, e)
-        logger.info("Fetched %d unread emails", len(results))
+        logger.info("Fetched %d email(s) since %s", len(results), since)
         return results
 
     def _parse(self, msg: MailMessage) -> dict:

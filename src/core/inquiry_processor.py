@@ -98,11 +98,11 @@ class InquiryProcessor:
             return
 
         try:
-            emails = self._gmail.fetch_unread()
+            emails = self._gmail.fetch_recent()
         except Exception as e:
             logger.error("IMAP fetch failed — skipping this cycle: %s", e)
             return
-        logger.info("Fetched %d unread email(s)", len(emails))
+        logger.info("Fetched %d email(s) to consider", len(emails))
 
         auto_conditions = self._sheets.read_auto_send_conditions()
         try:

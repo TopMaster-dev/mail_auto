@@ -63,8 +63,12 @@ class SendGate:
         if self._global_confirm:
             return GATE_CONFIRM
 
-        # Per-condition auto-send: check if this inquiry type is whitelisted
-        if auto_send_conditions.get("auto_send_all", False):
+        # Operator-controlled switch, re-read from the 設定 sheet each cycle so
+        # the client can turn auto-send on without a deploy. The key must match
+        # what setup_sheets.py seeds and what the operator actually sees in the
+        # sheet: this read asked for "auto_send_all" while the sheet only ever
+        # contained 自動送信有効, so the switch silently did nothing.
+        if auto_send_conditions.get("自動送信有効", False):
             return GATE_AUTO
 
         # Future: map inquiry type to a condition key and check
