@@ -27,8 +27,13 @@ from src.matching import area as area_mod
 
 logger = logging.getLogger(__name__)
 
-# SUUMO rounds rent to one decimal in 万円 (6.3万円), so ±500 is inherent.
-_RENT_TOLERANCE = 3000
+# SUUMO rounds rent to one decimal in 万円 (6.3万円), so ±500 is inherent — and
+# ±500 is all that is warranted. At ±3000 a ¥65,000 flat satisfies a 6.4万円
+# reflection, which makes rent nearly useless as a discriminator when only three
+# or four signals are available at all. Tightening it changes no current match
+# (verified against all 26 reflections received since 2026-08-01); it narrows the
+# window in which two unrelated flats can agree on price by coincidence.
+_RENT_TOLERANCE = 600
 _AREA_TOLERANCE = 0.5
 
 _TRAILING_ROOM = re.compile(r"(\d+)\s*(?:号室)?$")
@@ -125,6 +130,17 @@ def _signals(prop: Property, want: dict) -> set[str]:
     return agree
 
 
+def _building_key(prop: Property) -> str:
+    """Identity of the building, ignoring any room number in its registered name.
+
+    Rooms of one building are often registered as オリーブ_201 / オリーブ_205, so
+    the raw name would make two rooms of the same building look like two
+    different buildings and wrongly read as ambiguous.
+    """
+    raw = prop.building_name or prop.name or ""
+    return strip_room(_norm(raw).lower()).strip(" 　_-・")
+
+
 def _accepts(agree: set[str]) -> bool:
     """Strict enough that a wrong flat is not described to a customer.
 
@@ -165,6 +181,24 @@ def match(reflection, properties: list[Property]) -> Match | None:
         return None
 
     scored.sort(key=lambda t: (t[0], t[1], t[2]), reverse=True)
+
+    # Two different buildings agreeing equally well is not a match, it is a coin
+    # flip decided by WordPress load order — and the module's whole premise is
+    # that a wrong flat is worse than no flat. The risk is real even though no
+    # live mail is known to have hit it: パストラーレ富士松_307 is registered with
+    # 部屋番号 107 despite its name ending 307, so a 107 reflection can agree with
+    # it on room number by pure data error. Vacancy is deliberately excluded from
+    # the tie test — preferring a vacant unit is only sound once the building
+    # itself is settled, otherwise vacancy silently picks the wrong building.
+    top = scored[0][:2]
+    tied_buildings = {_building_key(t[4]) for t in scored if t[:2] == top}
+    if len(tied_buildings) > 1:
+        logger.warning(
+            "Portal match ambiguous for 「%s」 — %d buildings agree equally (%s); "
+            "returning no match rather than guessing",
+            name, len(tied_buildings), ", ".join(sorted(tied_buildings)))
+        return None
+
     _, room_level, _, agree, prop = scored[0]
 
     display = name.strip() if room_level else strip_room(name)
