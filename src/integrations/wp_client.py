@@ -18,6 +18,37 @@ _BUILDNAME_TAX = "buildname"
 
 # Trailing room number: オリーブ201 -> オリーブ, EIGHT BASEC棟2 -> EIGHT BASEC棟
 _ROOM_SUFFIX = re.compile(r"\d+$")
+_ROOM_IN_NAME = re.compile(r"(\d+)$")
+
+
+def _room_key(text: str) -> str:
+    """`0308` and `308` name the same room; compare them as one."""
+    folded = unicodedata.normalize("NFKC", str(text or "")).strip().upper().replace(" ", "")
+    return folded.lstrip("0") or folded
+
+
+def _listed_room(prop: Property) -> str:
+    """The room actually on the market for this listing.
+
+    部屋番号 wins wherever it is filled in — it is the field the client maintains
+    as the currently advertised room. Only when it is blank does the number in
+    the 物件名 stand in, since then it is the sole signal available.
+    """
+    if prop.room_number:
+        return _room_key(prop.room_number)
+    m = _ROOM_IN_NAME.search(formal_key(prop.building_name))
+    return _room_key(m.group(1)) if m else ""
+
+
+def _name_stem(key: str) -> str:
+    """Building identity: a formal key with any trailing room number removed.
+
+    The client registers the room they originally photographed in the 物件名, so
+    パストラーレ富士松_307 is currently let as room 107. The number in the name is
+    therefore not evidence of which room is on the market and must not be matched
+    against the portal's room — only the 部屋番号 field may be.
+    """
+    return _ROOM_SUFFIX.sub("", key)
 
 
 def _room_number(floor: str | None) -> str:
@@ -133,6 +164,12 @@ class WordPressClient:
         name, per the client's instruction to introduce the building without
         referring to a room we cannot confirm.
 
+        The room is taken from the 部屋番号 field and never from the 物件名. The
+        client registers the room they originally photographed in the name, so
+        パストラーレ富士松_307 is currently let as room 107 — treating the name's
+        number as the listed room would offer the wrong flat. Some names carry no
+        room at all, which is why the building is matched on its stem.
+
         A vacant listing is preferred when several rooms in a building match, so
         the mail does not offer something already taken.
         """
@@ -140,26 +177,27 @@ class WordPressClient:
         if not key:
             return None, ""
 
-        exact = [p for p in self._properties if formal_key(p.building_name) == key]
-        if exact:
-            return self._best(exact), name.strip()
-
-        stem = _ROOM_SUFFIX.sub("", key)
-        if not stem or stem == key:
+        stem = _name_stem(key)
+        if not stem:
             return None, ""
 
-        # Only a trailing room number may differ — never a longer building name.
-        # The remainder may also be empty: some buildings are registered without
-        # a room number at all (EIGHT BASEC棟), which is still a building match.
-        same_building = [
-            p for p in self._properties
-            if (rest := formal_key(p.building_name))[:len(stem)] == stem
-            and (rest[len(stem):] == "" or rest[len(stem):].isdigit())
-        ]
+        same_building = [p for p in self._properties
+                         if _name_stem(formal_key(p.building_name)) == stem]
         if not same_building:
             return None, ""
-        display = _ROOM_SUFFIX.sub("", unicodedata.normalize("NFKC", name)).strip(" _-・")
-        return self._best(same_building), display
+
+        # Room-level match: the portal's room against 部屋番号, the only field
+        # that states which room is actually on the market.
+        m = _ROOM_IN_NAME.search(key)
+        want_room = _room_key(m.group(1)) if m else ""
+        if want_room:
+            exact_room = [p for p in same_building if _listed_room(p) == want_room]
+            if exact_room:
+                return self._best(exact_room), name.strip()
+
+        # Building only: say the building and drop the room we cannot confirm.
+        display = _ROOM_SUFFIX.sub("", unicodedata.normalize("NFKC", name)).strip(" 　_-・")
+        return self._best(same_building), display or name.strip()
 
     @staticmethod
     def _best(candidates: list[Property]) -> Property:
