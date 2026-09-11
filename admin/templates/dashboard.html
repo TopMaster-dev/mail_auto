@@ -36,7 +36,8 @@
             <span class="badge bg-{{
               'success' if st == '送信済み' else
               'primary' if st == '自動送信可' else
-              'danger'  if st in ('要確認','NG検出') else
+              'danger'  if st in ('要確認','NG検出','処理中断') else
+              'warning text-dark' if st == '処理中' else
               'info'    if st == '返信あり' else 'secondary' }}">{{ st }}</span>
           </td>
           <td class="small">{{ r.get('追客ステータス') }}{% if r.get('追客回数') %} ({{ r.get('追客回数') }}){% endif %}</td>

@@ -28,16 +28,15 @@ def _room_key(text: str) -> str:
 
 
 def _listed_room(prop: Property) -> str:
-    """The room actually on the market for this listing.
+    """The room actually on the market for this listing, or "" if unknown.
 
-    部屋番号 wins wherever it is filled in — it is the field the client maintains
-    as the currently advertised room. Only when it is blank does the number in
-    the 物件名 stand in, since then it is the sole signal available.
+    Only 部屋番号 counts. The number in the 物件名 is the room that was originally
+    photographed and is not necessarily the one being advertised, so it is never
+    read as the listed room — not even when 部屋番号 is blank. A listing with no
+    部屋番号 simply cannot confirm a room, and is introduced by building alone
+    (client's instruction, 2026-09-11).
     """
-    if prop.room_number:
-        return _room_key(prop.room_number)
-    m = _ROOM_IN_NAME.search(formal_key(prop.building_name))
-    return _room_key(m.group(1)) if m else ""
+    return _room_key(prop.room_number) if prop.room_number else ""
 
 
 def _name_stem(key: str) -> str:

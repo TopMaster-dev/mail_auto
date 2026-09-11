@@ -14,13 +14,15 @@ from src.core.models import Property
 from src.integrations.wp_client import WordPressClient, formal_key
 
 
-def _prop(wp_id, building_name, vacant=True, rent=70000, title="サイト掲載タイトル"):
+def _prop(wp_id, building_name, vacant=True, rent=70000, title="サイト掲載タイトル",
+          room_number=""):
     return Property(
         wp_id=wp_id, name=title, url=f"https://rentmagazine.jp/estate/{wp_id}",
         rent=rent, management_fee=5000, layout="1LDK", nearest_station="",
         train_line="名鉄線", city="安城市", walk_minutes=8, category=[],
         equipment=[], is_vacant=vacant, is_commission_free=False,
-        area_sqm=40.0, building_type="マンション", building_name=building_name)
+        area_sqm=40.0, building_type="マンション", building_name=building_name,
+        room_number=room_number)
 
 
 def _client(props):
@@ -44,14 +46,17 @@ class TestFormalKey(unittest.TestCase):
 
 
 class TestRoomLevelMatch(unittest.TestCase):
+    # The room is confirmed from 部屋番号 only. These listings carry it; a listing
+    # without it can never match room-level — see TestNoRoomNumberRegistered.
     def test_exact_room_keeps_the_full_name(self):
-        wp = _client([_prop(1, "オリーブ_201"), _prop(2, "オリーブ_102")])
+        wp = _client([_prop(1, "オリーブ_201", room_number="201"),
+                      _prop(2, "オリーブ_102", room_number="102")])
         prop, display = wp.resolve_by_formal_name("オリーブ201")
         self.assertEqual(prop.wp_id, 1)
         self.assertEqual(display, "オリーブ201")
 
     def test_roman_numeral_room_resolves(self):
-        wp = _client([_prop(9, "Jack hachimanⅢ_301")])
+        wp = _client([_prop(9, "Jack hachimanⅢ_301", room_number="301")])
         prop, display = wp.resolve_by_formal_name("Jack hachimanIII301")
         self.assertEqual(prop.wp_id, 9)
         self.assertEqual(display, "Jack hachimanIII301")

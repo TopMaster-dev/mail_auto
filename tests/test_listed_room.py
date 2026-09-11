@@ -69,13 +69,23 @@ class TestPickingBetweenRooms(unittest.TestCase):
         self.assertEqual(prop.wp_id, 1)
 
 
-class TestFallbackWhenTheFieldIsBlank(unittest.TestCase):
-    """Some listings carry no 部屋番号; then the name is the only signal."""
+class TestNoRoomNumberRegistered(unittest.TestCase):
+    """With 部屋番号 blank the room cannot be confirmed at all.
 
-    def test_name_room_is_used_when_no_room_number_is_registered(self):
+    The number in the 物件名 is the photographed room, so it is not a fallback —
+    using it risks naming a room that is not the one being let (client, 2026-09-11).
+    """
+
+    def test_name_room_is_never_used_as_a_fallback(self):
         wp = _client([_prop(1, "オリーブ_201"), _prop(2, "オリーブ_102")])
         prop, display = wp.resolve_by_formal_name("オリーブ201")
-        self.assertEqual(prop.wp_id, 1)
+        self.assertIsNotNone(prop)              # building still matches
+        self.assertEqual(display, "オリーブ")     # but no room is claimed
+
+    def test_a_registered_room_number_still_wins(self):
+        wp = _client([_prop(1, "オリーブ_201"), _prop(2, "オリーブ_102", room_number="201")])
+        prop, display = wp.resolve_by_formal_name("オリーブ201")
+        self.assertEqual(prop.wp_id, 2)
         self.assertEqual(display, "オリーブ201")
 
 

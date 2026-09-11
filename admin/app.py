@@ -34,7 +34,8 @@ from src.integrations.sheets_client import SheetsClient
 logger = logging.getLogger(__name__)
 
 # Statuses the operator filters by, in display order
-STATUS_ORDER = ["自動送信可", "AI返信文生成済み", "要確認", "NG検出", "送信済み", "返信あり"]
+STATUS_ORDER = ["自動送信可", "処理中", "処理中断", "要確認", "NG検出",
+                "送信済み", "返信あり"]
 
 
 class _AdminUser(UserMixin):

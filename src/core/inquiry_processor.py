@@ -97,6 +97,8 @@ class InquiryProcessor:
                          "no mail is processed unscreened", e)
             return
 
+        self._sweep_interrupted()
+
         try:
             emails = self._gmail.fetch_recent()
         except Exception as e:
@@ -122,6 +124,30 @@ class InquiryProcessor:
                                  raw.get("uid"), e)
 
         logger.info("─── Poll cycle end ───")
+
+    def _sweep_interrupted(self) -> None:
+        """Flag rows left mid-processing by a crash or restart as 処理中断.
+
+        処理中 is written for a second or two between drafting and the send gate,
+        and rows are processed one at a time in this process — so nothing is
+        legitimately 処理中 when a new cycle begins. Anything still there was
+        interrupted, and would otherwise sit unnoticed and unsent forever.
+        """
+        try:
+            rows = self._sheets.read_inquiries()
+        except Exception as e:
+            logger.error("Could not scan for interrupted rows: %s", e)
+            return
+        for rec in rows:
+            if str(rec.get("ステータス", "")).strip() != "処理中":
+                continue
+            iid = str(rec.get("ID", "")).strip()
+            if not iid:
+                continue
+            logger.warning("Inquiry %s was left mid-processing → 処理中断", iid)
+            self._sheets.update_status(iid, "処理中断")
+            self._sheets.write_review_log(
+                iid, "前回の処理が中断されました（要手動確認）", "")
 
     def _process_one(self, raw: dict, auto_conditions: dict,
                      seen_ids: set[str] | None = None) -> None:
@@ -228,7 +254,10 @@ class InquiryProcessor:
             logger.info("Inquiry %s → NG検出 (AI draft)", inquiry.id)
             return
 
-        self._sheets.update_status(inquiry.id, "AI返信文生成済み")
+        # Transient: the send gate below replaces this within the same cycle. A
+        # row still carrying it when the next cycle starts means processing was
+        # interrupted, which _sweep_interrupted() turns into 処理中断.
+        self._sheets.update_status(inquiry.id, "処理中")
 
         # ── Step 8: send gate ────────────────────────────────────────────────
         gate_result = self._gate.evaluate(inquiry, body_check, draft_check, auto_conditions)

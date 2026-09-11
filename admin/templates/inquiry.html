@@ -19,6 +19,9 @@
           <dt class="col-5">ステータス</dt><dd class="col-7">{{ rec.get('ステータス') }}</dd>
           <dt class="col-5">自動送信可否</dt><dd class="col-7">{{ rec.get('自動送信可否') }}</dd>
           <dt class="col-5">NGワード</dt><dd class="col-7">{{ rec.get('NGワード') or '—' }}</dd>
+          <dt class="col-5">NGカテゴリ</dt><dd class="col-7">{{ rec.get('NGカテゴリ') or '—' }}</dd>
+          <dt class="col-5">判定理由</dt>
+          <dd class="col-7">{{ rec.get('差別表現判定理由') or '—' }}</dd>
           <dt class="col-5">追客状況</dt><dd class="col-7">{{ rec.get('追客ステータス') }} ({{ rec.get('追客回数') or 0 }})</dd>
           <dt class="col-5">次回追客</dt><dd class="col-7">{{ rec.get('次回追客予定日') or '—' }}</dd>
         </dl>
