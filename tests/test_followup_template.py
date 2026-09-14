@@ -4,8 +4,9 @@
 Every block in that template is asserted here, because the previous
 implementation silently reused the 1st-mail body and none of it was present.
 """
+import re
 import unittest
-from datetime import date, datetime
+from datetime import datetime
 
 from src.core.models import Inquiry, Property
 from src.email_builder import followup_blocks as fb
@@ -89,14 +90,15 @@ class TestTemplateBlocks(unittest.TestCase):
     def test_ai_intro_present(self):
         self.assertIn("AI紹介文です", self.body)
 
-    def test_three_concrete_date_proposals(self):
+    def test_asks_for_the_customers_preferred_times(self):
+        self.assertIn("ご都合のよい日時", self.body)
+        self.assertIn("お知らせいただけますでしょうか", self.body)
+        self.assertIn("大寺 啓未様", self.body)
         for label in ("第一希望", "第二希望", "第三希望"):
-            self.assertIn(label, self.body)
-        self.assertIn("下記の日程はご都合いかがでしょうか", self.body)
+            self.assertIn(f"・{label}　月　日　午前／午後　時頃", self.body)
 
-    def test_fallback_schedule_template(self):
-        self.assertIn("上記日程が合わない場合", self.body)
-        self.assertIn("大寺 啓未様のご都合のよいご希望日", self.body)
+    def test_promises_the_office_will_confirm(self):
+        self.assertIn("日程を確認のうえ", self.body)
 
     def test_station_pickup(self):
         self.assertIn("最寄駅までお迎えいたします", self.body)
@@ -143,17 +145,42 @@ class TestVacancyBranch(unittest.TestCase):
         self.assertNotIn("◆お問い合わせ物件", body)
 
 
-class TestScheduleSlots(unittest.TestCase):
-    def test_three_future_dates_with_weekday(self):
-        lines = fb.proposed_slots(date(2026, 8, 31))   # Monday
-        self.assertEqual(len(lines), 3)
-        self.assertIn("9月1日(火)", lines[0])
-        self.assertIn("9月2日(水)", lines[1])
-        self.assertIn("9月3日(木)", lines[2])
+class TestNeverProposesAConcreteDate(unittest.TestCase):
+    """The system cannot know whether a member of staff is free.
 
-    def test_slots_stay_within_business_hours(self):
-        for line in fb.proposed_slots(date(2026, 8, 31)):
-            self.assertTrue(any(t in line for t in ("10:00", "14:00", "16:00")), line)
+    Proposing 「9月1日(火) 午前（10:00〜12:00）」 committed the office to times it
+    might not be able to honour, so the customer is asked instead and the office
+    confirms afterwards (client's instruction, 2026-09-14).
+    """
+
+    def test_no_calendar_date_appears_in_either_mail(self):
+        for _, body in (_second(), _third()):
+            self.assertNotIn("下記の日程はご都合いかがでしょうか", body)
+            self.assertNotIn("上記日程が合わない場合", body)
+            self.assertIsNone(re.search(r"\d+月\d+日\([月火水木金土日]\)", body))
+
+    def test_no_specific_time_window_is_offered(self):
+        for _, body in (_second(), _third()):
+            for t in ("10:00〜12:00", "14:00〜16:00", "16:00〜18:00"):
+                self.assertNotIn(t, body)
+
+    def test_the_date_generator_is_gone(self):
+        """Dead code that invents dates is a trap; it must not linger."""
+        self.assertFalse(hasattr(fb, "proposed_slots"))
+        self.assertFalse(hasattr(fb, "SCHEDULE_FALLBACK"))
+
+
+class TestStaffNameIsReal(unittest.TestCase):
+    def test_the_configured_name_is_used(self):
+        _, body = _second()
+        self.assertIn("レントマガジン株式会社の新家と申します", body)
+
+    def test_the_placeholder_is_not_shipped(self):
+        """settings.yaml shipped 「担当者名」 and it went out verbatim."""
+        import io, yaml
+        cfg = yaml.safe_load(io.open("config/settings.yaml", encoding="utf-8"))
+        self.assertNotEqual(cfg["company"]["staff_name"], "担当者名")
+        self.assertTrue(cfg["company"]["staff_name"].strip())
 
 
 class TestNoUnverifiedClaims(unittest.TestCase):

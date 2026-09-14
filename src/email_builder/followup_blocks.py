@@ -12,40 +12,24 @@ to be true, so the neutral wording below is used instead.
 """
 from __future__ import annotations
 
-from datetime import date, timedelta
-
-_WEEKDAYS = "月火水木金土日"
-
-# Three concrete slots, since the template asks for proposed dates rather than a
-# blank form. The office is open 10:00–18:00 every day, holidays included.
-_SLOT_LABELS = ("午前（10:00〜12:00）", "午後（14:00〜16:00）", "午後（16:00〜18:00）")
-_DAYS_AHEAD = (1, 2, 3)
-
-
-def proposed_slots(today: date | None = None) -> list[str]:
-    """`・第一希望　9月1日(月) 午前（10:00〜12:00）` × 3."""
-    today = today or date.today()
-    labels = ("第一希望", "第二希望", "第三希望")
-    lines = []
-    for label, ahead, slot in zip(labels, _DAYS_AHEAD, _SLOT_LABELS):
-        d = today + timedelta(days=ahead)
-        lines.append(f"・{label}　{d.month}月{d.day}日({_WEEKDAYS[d.weekday()]}) {slot}")
-    return lines
-
+# Deliberately no date arithmetic here. An earlier version proposed three
+# concrete slots (tomorrow / +2 / +3 days), but the system cannot know whether a
+# member of staff is free then, so the mail was committing the office to times it
+# might not be able to honour. The customer is asked for their preferences
+# instead and the office confirms afterwards (client's instruction, 2026-09-14).
+# This matches the 1st mail, which already asked rather than proposed.
 
 VIEWING_PROMPT = """\
 写真や条件だけでは分かりにくい広さや日当たり、周辺の雰囲気は、
 実際にご覧いただくことでご比較いただきやすくなります。
 
-下記の日程はご都合いかがでしょうか。"""
+ご内覧・ご来店をご希望の場合は、{name}様のご都合のよい日時を
+下記のテンプレートよりいくつかお知らせいただけますでしょうか。
+日程を確認のうえ、あらためてご連絡させていただきます。
 
-SCHEDULE_FALLBACK = """\
-上記日程が合わない場合、{name}様のご都合のよいご希望日を
-下記のテンプレートよりお知らせください。
-
-・第一希望　月　日　午前　午後　時頃
-・第二希望　月　日　午前　午後　時頃
-・第三希望　月　日　午前　午後　時頃"""
+・第一希望　月　日　午前／午後　時頃
+・第二希望　月　日　午前／午後　時頃
+・第三希望　月　日　午前／午後　時頃"""
 
 MEETING = """\
 物件現地での待ち合わせも可能です。

@@ -33,6 +33,9 @@ _TRANSIENT_ERRORS = (
 _VACANCY_COL = 7        # "空室有無"
 _STATUS_COL = 8         # "ステータス"
 _DRAFT_COL = 9          # "AI返信文案"
+_NG_WORDS_COL = 11      # "NGワード"
+_NG_CATEGORY_COL = 12   # "NGカテゴリ"
+_DISC_REASON_COL = 13   # "差別表現判定理由"
 _FOLLOWUP_COL = 14      # "追客ステータス"
 _NEXT_FOLLOWUP_COL = 15 # "次回追客予定日"
 _SENT_COL = 16          # "送信日時"
@@ -138,6 +141,19 @@ class SheetsClient:
 
     def update_draft(self, inquiry_id: str, draft: str) -> None:
         self.update_inquiry_field(inquiry_id, _DRAFT_COL, draft)
+
+    def update_ng_result(self, inquiry_id: str, words: str,
+                         category: str, reason: str) -> None:
+        """Record why a mail was held, on the inquiry row itself.
+
+        These columns are filled when the row is first written, before any check
+        has run, so they were always blank for exactly the rows that needed them.
+        The operator could see 「NG検出」 on screen but had to open 要確認履歴 to
+        learn which word or judgement caused it.
+        """
+        self.update_inquiry_field(inquiry_id, _NG_WORDS_COL, words)
+        self.update_inquiry_field(inquiry_id, _NG_CATEGORY_COL, category)
+        self.update_inquiry_field(inquiry_id, _DISC_REASON_COL, reason)
 
     def mark_sent(self, inquiry_id: str, message_id: str) -> None:
         self.update_inquiry_field(inquiry_id, _SENT_COL,

@@ -97,7 +97,7 @@ admin:
 
 company:
   name: "レントマガジン株式会社"
-  staff_name: "担当者名"             # replace with actual name
+  staff_name: "新家"                 # signs every mail; sent verbatim
   tel: "0566-70-7117"
   fax: "0566-70-7228"
   email: "contact@rentmagazine.jp"

@@ -167,9 +167,7 @@ class EmailAssembler:
         else:
             body.append(self._alt_section(alt_intros))
 
-        body += [fb.VIEWING_PROMPT,
-                 "\n".join(fb.proposed_slots()),
-                 fb.SCHEDULE_FALLBACK.format(name=inquiry.customer_name),
+        body += [fb.VIEWING_PROMPT.format(name=inquiry.customer_name),
                  fb.MEETING]
 
         station = self._station_line(prop)

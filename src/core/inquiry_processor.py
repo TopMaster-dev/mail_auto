@@ -149,6 +149,18 @@ class InquiryProcessor:
             self._sheets.write_review_log(
                 iid, "前回の処理が中断されました（要手動確認）", "")
 
+    def _already_marked_replied(self, inquiry_id: str) -> bool:
+        """Has this inquiry already been recorded as replied-to?"""
+        try:
+            rec = self._sheets.get_inquiry(inquiry_id) or {}
+        except Exception as e:
+            # Unknown: treat as not yet marked. Re-recording a reply is harmless;
+            # missing one would keep chasing a customer who already answered.
+            logger.warning("Could not read inquiry %s: %s", inquiry_id, e)
+            return False
+        return (str(rec.get("ステータス", "")).strip() == "返信あり"
+                and str(rec.get("追客ステータス", "")).strip() == "追客停止")
+
     def _process_one(self, raw: dict, auto_conditions: dict,
                      seen_ids: set[str] | None = None) -> None:
         # ── Step 1: reply detection ──────────────────────────────────────────
@@ -156,9 +168,15 @@ class InquiryProcessor:
         if in_reply_to:
             orig_id = self._sheets.find_inquiry_by_message_id(in_reply_to)
             if orig_id:
-                self._sheets.update_status(orig_id, "返信あり")
-                self._sheets.stop_followup(orig_id)
-                logger.info("Customer replied to inquiry %s → followup stopped", orig_id)
+                # Always stop here — this mail is a reply, never a new inquiry.
+                # Acting is guarded separately: the mailbox is now re-scanned in
+                # full every cycle, so the same reply is seen over and over and
+                # would otherwise rewrite the row and re-log every few minutes.
+                if not self._already_marked_replied(orig_id):
+                    self._sheets.update_status(orig_id, "返信あり")
+                    self._sheets.stop_followup(orig_id)
+                    logger.info("Customer replied to inquiry %s → followup stopped",
+                                orig_id)
                 return
 
         # ── Step 2: is this a reflection at all? ─────────────────────────────
@@ -206,6 +224,8 @@ class InquiryProcessor:
             ng_str = ", ".join(h.word for h in body_check.ng_hits)
             reason = " / ".join(r for r in (body_check.discriminatory_reason,
                                             body_check.complaint_reason) if r)
+            self._sheets.update_ng_result(inquiry.id, ng_str,
+                                          inquiry.ng_category, reason)
             self._sheets.write_review_log(inquiry.id,
                                           f"受信メールNG: {reason}", ng_str)
             logger.info("Inquiry %s → NG検出 (incoming body)", inquiry.id)
@@ -248,6 +268,11 @@ class InquiryProcessor:
             inquiry.discriminatory_flag = draft_check.discriminatory
             self._sheets.update_status(inquiry.id, "NG検出")
             ng_str = ", ".join(h.word for h in draft_check.ng_hits)
+            category = draft_check.ng_hits[0].category if draft_check.ng_hits else ""
+            reason = " / ".join(r for r in (draft_check.discriminatory_reason,
+                                            draft_check.complaint_reason) if r)
+            self._sheets.update_ng_result(
+                inquiry.id, ng_str, category, f"AI生成文: {reason}" if reason else "")
             self._sheets.write_review_log(inquiry.id,
                                           f"AI生成文NG: {draft_check.discriminatory_reason}",
                                           ng_str)
