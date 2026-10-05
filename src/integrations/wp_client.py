@@ -175,6 +175,29 @@ class WordPressClient:
                          "snapshot loaded at %s", e, self._loaded_at)
             return False
 
+    def refetch_one(self, wp_id: int) -> Property | None:
+        """Re-read one listing. Returns None if it cannot be read.
+
+        The bulk snapshot may be up to refresh_minutes old, which is fine for
+        matching against 1,800 listings but not for the single listing the reply
+        actually makes a claim about: 「ご紹介できない状況です」 is a statement of
+        fact about one room, and it must be true at the moment it is written.
+        One request costs under two seconds, against a reply that already spends
+        tens of seconds in the Claude API, and happens once per inquiry.
+        """
+        if not wp_id:
+            return None
+        try:
+            raw = self._get(f"/wp-json/wp/v2/estate/{wp_id}",
+                            params={"_fields": self._ESTATE_FIELDS})
+        except Exception as e:
+            logger.warning("Could not re-read listing %s (%s) — using the "
+                           "snapshot", wp_id, e)
+            return None
+        if not isinstance(raw, dict) or not raw.get("id"):
+            return None
+        return self._to_property(raw)
+
     @property
     def properties(self) -> list[Property]:
         """The most recently loaded listings."""

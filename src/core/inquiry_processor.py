@@ -422,7 +422,38 @@ class InquiryProcessor:
                            inquiry.id)
             return None, None
 
+        # Confirm vacancy against WordPress right now rather than against the
+        # snapshot. This is the one listing the mail asserts something about, so
+        # a stale answer here is the error the customer actually reads.
+        fresh = self._wp.refetch_one(prop.wp_id)
+        if fresh is not None:
+            if fresh.is_vacant != prop.is_vacant:
+                logger.info("Vacancy changed since the snapshot for %s: %s → %s",
+                            prop.building_name or prop.name,
+                            prop.is_vacant, fresh.is_vacant)
+            prop = fresh
+
         return prop, prop.is_vacant
+
+    def _confirmed_vacant(self, alts: list[Property]) -> list[Property]:
+        """Drop any suggestion that is no longer vacant, checked against WordPress.
+
+        These are offered as rooms the customer could take instead, so proposing
+        one let since the snapshot is the same error as misreporting the room
+        they asked about — only more embarrassing, because we chose it. At most
+        three requests, and only when the enquired room is unavailable.
+        """
+        confirmed: list[Property] = []
+        for alt in alts:
+            fresh = self._wp.refetch_one(alt.wp_id)
+            if fresh is None:
+                confirmed.append(alt)      # unreadable: keep the snapshot's view
+            elif fresh.is_vacant:
+                confirmed.append(fresh)
+            else:
+                logger.info("Dropping alternative %s — no longer vacant",
+                            fresh.building_name or fresh.name)
+        return confirmed
 
     def _build_email(self, inquiry: Inquiry,
                      reflection: Reflection | None = None
@@ -441,7 +472,7 @@ class InquiryProcessor:
         else:
             intro = ""
             base = inquiry.matched_property or self._reference_property(reflection)
-            for alt in self._scorer.find_alternatives(base, top_n=3):
+            for alt in self._confirmed_vacant(self._scorer.find_alternatives(base, top_n=3)):
                 alt_text = self._generator.generate_alt_intro(
                     inquiry.matched_property or alt, alt)
                 alt_intros.append((alt, alt_text))
