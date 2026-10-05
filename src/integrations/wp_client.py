@@ -3,6 +3,7 @@ import logging
 import re
 import time
 import unicodedata
+from datetime import datetime
 from typing import Any
 
 import requests
@@ -127,24 +128,56 @@ class WordPressClient:
         # caches populated by load_all()
         self._term_cache: dict[str, dict[int, str]] = {}
         self._properties: list[Property] = []
+        self._loaded_at: datetime | None = None
 
     # ── public API ──────────────────────────────────────────────────────────
 
     def load_all(self) -> list[Property]:
-        """Fetch all estate posts and build Property list. Call once at startup."""
+        """Fetch all estate posts and build the Property list."""
         logger.info("Loading taxonomy term caches from WordPress…")
         self._preload_terms()
         logger.info("Fetching all estate posts from WordPress…")
         raw = self._fetch_all_pages("estate")
         self._properties = [self._to_property(p) for p in raw]
+        self._loaded_at = datetime.now()
         logger.info("Loaded %d properties (%d vacant)",
                     len(self._properties),
                     sum(1 for p in self._properties if p.is_vacant))
         return self._properties
 
+    def refresh_if_stale(self, max_age_minutes: int) -> bool:
+        """Reload listings when the snapshot has aged out. True if it reloaded.
+
+        Listings were previously read once at startup and never again, so the
+        service answered from whatever the site held when it last booted. A room
+        let since then still read as vacant, a room freed still read as taken —
+        カーナ若宮306 was offered alternatives on 2026-10-04 because the snapshot
+        loaded on 09-30 had it unavailable — and a newly published listing could
+        not be matched at all.
+        """
+        if max_age_minutes <= 0:
+            return False
+        if self._loaded_at is not None:
+            age_minutes = (datetime.now() - self._loaded_at).total_seconds() / 60
+            if age_minutes < max_age_minutes:
+                return False
+
+        previous = self._properties
+        try:
+            self.load_all()
+            return True
+        except Exception as e:
+            # Keep serving the previous snapshot. Stale data is wrong, but an
+            # empty list is worse: every lookup would miss, and every mail would
+            # go out saying the property could not be found.
+            self._properties = previous
+            logger.error("Could not refresh listings (%s) — continuing with the "
+                         "snapshot loaded at %s", e, self._loaded_at)
+            return False
+
     @property
     def properties(self) -> list[Property]:
-        """Listings loaded at startup."""
+        """The most recently loaded listings."""
         return self._properties
 
     def get_property_by_url(self, url: str) -> Property | None:

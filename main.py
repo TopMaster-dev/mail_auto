@@ -176,6 +176,7 @@ def build_processor(cfg: dict):
         gate=gate,
         company=cfg["company"],
         followup_cfg=followup_cfg,
+        wp_refresh_minutes=cfg["wordpress"].get("refresh_minutes", 30),
     )
 
     scheduler = None

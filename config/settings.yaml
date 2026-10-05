@@ -27,6 +27,11 @@ wordpress:
   base_url: "${WP_BASE_URL}"
   estate_post_type: estate
   per_page: 100
+  # How long a loaded listing snapshot may be used before it is re-read. The
+  # list used to be read once at startup and never again, so vacancy and newly
+  # published listings were whatever the site held when the service last booted.
+  # 0 disables refreshing.
+  refresh_minutes: 30
   app_user: "${WP_APP_USER}"
   app_password: "${WP_APP_PASSWORD}"
   # ACF field names (confirmed by probing /wp-json/wp/v2/estate)

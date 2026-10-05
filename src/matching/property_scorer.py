@@ -53,6 +53,16 @@ class PropertyScorer:
         self._all = properties
         self._df = self._build_df(properties)
 
+    def reload(self, properties: list[Property]) -> None:
+        """Swap in a fresh listing set after WordPress is re-read.
+
+        The scorer holds its own DataFrame built at construction, so refreshing
+        the client's listings alone would leave alternative suggestions drawn
+        from the startup snapshot — offering rooms let weeks ago.
+        """
+        self._all = properties
+        self._df = self._build_df(properties)
+
     def _build_df(self, properties: list[Property]) -> pd.DataFrame:
         rows = [{
             "idx": i,

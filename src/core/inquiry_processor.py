@@ -69,6 +69,7 @@ class InquiryProcessor:
         gate: SendGate,
         company: dict,
         followup_cfg: dict | None = None,
+        wp_refresh_minutes: int = 30,
     ):
         self._gmail = gmail
         self._sheets = sheets
@@ -78,6 +79,7 @@ class InquiryProcessor:
         self._scorer = scorer
         self._gate = gate
         self._company = company
+        self._wp_refresh_minutes = int(wp_refresh_minutes)
         followup_cfg = followup_cfg or {}
         self._followup_enabled = followup_cfg.get("enabled", False)
         steps = followup_cfg.get("steps", [{"days": 2}])
@@ -97,6 +99,7 @@ class InquiryProcessor:
                          "no mail is processed unscreened", e)
             return
 
+        self._refresh_listings()
         self._sweep_interrupted()
 
         try:
@@ -124,6 +127,21 @@ class InquiryProcessor:
                                  raw.get("uid"), e)
 
         logger.info("─── Poll cycle end ───")
+
+    def _refresh_listings(self) -> None:
+        """Re-read WordPress when the cached listings have aged out.
+
+        The scorer is rebuilt in step: it keeps its own DataFrame, so refreshing
+        only the client would leave alternative suggestions drawn from the
+        startup snapshot.
+        """
+        try:
+            if self._wp.refresh_if_stale(self._wp_refresh_minutes):
+                self._scorer.reload(self._wp.properties)
+        except Exception as e:
+            # Never abort a cycle over this — the previous snapshot is still
+            # serviceable, and mail waiting to be read matters more.
+            logger.exception("Listing refresh failed: %s", e)
 
     def _sweep_interrupted(self) -> None:
         """Flag rows left mid-processing by a crash or restart as 処理中断.
