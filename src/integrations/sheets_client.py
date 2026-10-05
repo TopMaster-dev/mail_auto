@@ -33,6 +33,7 @@ _TRANSIENT_ERRORS = (
 _VACANCY_COL = 7        # "空室有無"
 _STATUS_COL = 8         # "ステータス"
 _DRAFT_COL = 9          # "AI返信文案"
+_MAX_CELL_CHARS = 49000  # Sheets hard limit is 50,000 per cell
 _NG_WORDS_COL = 11      # "NGワード"
 _NG_CATEGORY_COL = 12   # "NGカテゴリ"
 _DISC_REASON_COL = 13   # "差別表現判定理由"
@@ -172,13 +173,30 @@ class SheetsClient:
     # ── send log ────────────────────────────────────────────────────────────
 
     def write_send_log(self, inquiry_id: str, recipient: str,
-                       subject: str, message_id: str, mail_type: str) -> None:
+                       subject: str, message_id: str, mail_type: str,
+                       body: str = "") -> None:
+        """Record one sent mail, body included.
+
+        The body is kept so staff can see what was actually said to a customer
+        before 2nd and 3rd overwrite the single draft cell on the inquiry row.
+        Once follow-ups run automatically, nobody can answer a phone call about
+        an inquiry without it.
+        """
         ws = self._ws("send_log")
         row = [
             datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             inquiry_id, recipient, subject, message_id, mail_type,
+            # Sheets caps a cell at 50,000 characters; a mail is ~2,000, but a
+            # runaway draft must not fail the write and lose the send record.
+            (body or "")[:_MAX_CELL_CHARS],
         ]
         self._retry(lambda: ws.append_row(row, value_input_option="RAW"))
+
+    def read_send_log_for(self, inquiry_id: str) -> list[dict]:
+        """Every mail sent for one inquiry, oldest first."""
+        rows = self._records(self._ws("send_log"))
+        return [r for r in rows
+                if str(r.get("問い合わせID", "")).strip() == inquiry_id]
 
     def write_review_log(self, inquiry_id: str, reason: str, ng_words: str) -> None:
         ws = self._ws("review_log")

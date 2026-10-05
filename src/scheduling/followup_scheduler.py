@@ -151,7 +151,7 @@ class FollowupScheduler:
 
         # Log to send_log so a reply to this follow-up is also detected upstream.
         self._sheets.write_send_log(inquiry.id, inquiry.customer_email,
-                                    subject, sent_mid, mail_type)
+                                    subject, sent_mid, mail_type, body_plain)
         next_at = datetime.now() + timedelta(days=next_days) if next_days else None
         self._sheets.advance_followup(inquiry.id, new_count, next_at, status)
         self._sheets.write_followup_log(inquiry.id, mail_type, "送信")

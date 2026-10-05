@@ -292,7 +292,14 @@ def create_app(cfg: dict | None = None, *, sheets=None, gmail=None) -> Flask:
         if not rec:
             abort(404)
         subject = f"【{rec.get('問い合わせ物件', '')}】お問い合わせありがとうございます"
-        return render_template("inquiry.html", rec=rec, subject=subject)
+        try:
+            sent = sheets.read_send_log_for(iid)
+        except Exception:
+            # The history is useful context, not a reason to fail the page the
+            # operator needs in order to send at all.
+            logger.exception("Could not read the send history for %s", iid)
+            sent = []
+        return render_template("inquiry.html", rec=rec, subject=subject, sent=sent)
 
     @app.route("/inquiry/<iid>/save", methods=["POST"])
     @login_required
@@ -328,7 +335,9 @@ def create_app(cfg: dict | None = None, *, sheets=None, gmail=None) -> Flask:
 
         sheets.set_draft(iid, body)
         sheets.mark_sent(iid, sent_mid)
-        sheets.write_send_log(iid, inq.customer_email, subject, sent_mid, "1st")
+        # `body` is what the operator actually sent, edits included — not the
+        # generated draft.
+        sheets.write_send_log(iid, inq.customer_email, subject, sent_mid, "1st", body)
         if followup_enabled:
             next_at = datetime.now() + timedelta(days=followup_first_days)
             sheets.schedule_followup(iid, next_at, count=1)

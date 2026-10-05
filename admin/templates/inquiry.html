@@ -24,6 +24,7 @@
           <dd class="col-7">{{ rec.get('差別表現判定理由') or '—' }}</dd>
           <dt class="col-5">追客状況</dt><dd class="col-7">{{ rec.get('追客ステータス') }} ({{ rec.get('追客回数') or 0 }})</dd>
           <dt class="col-5">次回追客</dt><dd class="col-7">{{ rec.get('次回追客予定日') or '—' }}</dd>
+          <dt class="col-5">送信済み</dt><dd class="col-7">{{ sent|length }}通</dd>
         </dl>
         {% if rec.get('物件URL') %}
         <a href="{{ rec.get('物件URL') }}" target="_blank" class="btn btn-sm btn-outline-info mt-2 w-100">物件ページを開く</a>
@@ -70,6 +71,47 @@
             <button type="submit" class="btn btn-primary">この内容で送信</button>
           </div>
         </form>
+      </div>
+    </div>
+
+    <div class="card mt-3">
+      <div class="card-header">送信履歴（{{ sent|length }}通）</div>
+      <div class="card-body">
+        {% if sent %}
+          <div class="accordion" id="sendHistory">
+            {# Newest first: answering a phone call starts from the last thing sent. #}
+            {% for s in sent|reverse %}
+              {% set n = sent|length - loop.index0 %}
+              <div class="accordion-item">
+                <h2 class="accordion-header">
+                  <button class="accordion-button {% if not loop.first %}collapsed{% endif %}"
+                          type="button" data-bs-toggle="collapse"
+                          data-bs-target="#sent{{ n }}">
+                    <span class="badge bg-secondary me-2">{{ s.get('メール種別') or '—' }}</span>
+                    <span class="small">{{ s.get('送信日時') }}</span>
+                    <span class="small text-muted ms-2">{{ s.get('件名') }}</span>
+                  </button>
+                </h2>
+                <div id="sent{{ n }}"
+                     class="accordion-collapse collapse {% if loop.first %}show{% endif %}"
+                     data-bs-parent="#sendHistory">
+                  <div class="accordion-body">
+                    <div class="small text-muted mb-2">宛先：{{ s.get('宛先') }}</div>
+                    {% if s.get('本文') %}
+                      <pre class="small mb-0" style="white-space:pre-wrap; font-family:monospace;">{{ s.get('本文') }}</pre>
+                    {% else %}
+                      <div class="text-muted small">
+                        本文は記録されていません（本機能の導入前に送信されたメールです）。
+                      </div>
+                    {% endif %}
+                  </div>
+                </div>
+              </div>
+            {% endfor %}
+          </div>
+        {% else %}
+          <div class="text-muted small">まだ送信されていません。</div>
+        {% endif %}
       </div>
     </div>
   </div>

@@ -321,7 +321,7 @@ class InquiryProcessor:
                 inquiry.send_message_id = sent_mid
                 self._sheets.mark_sent(inquiry.id, sent_mid)
                 self._sheets.write_send_log(inquiry.id, inquiry.customer_email,
-                                            subject, sent_mid, "1st")
+                                            subject, sent_mid, "1st", body_plain)
                 if self._followup_enabled:
                     next_at = datetime.now() + timedelta(days=self._followup_first_days)
                     self._sheets.schedule_followup(inquiry.id, next_at, count=1)
