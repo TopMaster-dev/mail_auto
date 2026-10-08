@@ -2,6 +2,21 @@
 {% block title %}問い合わせ一覧{% endblock %}
 {% block content %}
 
+{% if template_error %}
+<div class="alert alert-danger d-flex align-items-start gap-2" role="alert">
+  <span style="font-size:1.4rem; line-height:1;">⚠️</span>
+  <div>
+    <strong>テンプレートに不備があるため、該当するメールの送信を停止しています。</strong>
+    <div class="small mt-1" style="white-space:pre-wrap;">{{ template_error }}</div>
+    <div class="small mt-2 text-muted">
+      スプレッドシートの「テンプレート」シートを修正してください。
+      修正後、1stメールは最大5分、2nd・3rdメールは最大30分で自動的に再開します。
+      管理画面での個別操作は不要です。
+    </div>
+  </div>
+</div>
+{% endif %}
+
 <div class="d-flex flex-wrap gap-2 mb-3">
   <a href="{{ url_for('dashboard') }}"
      class="btn btn-sm {{ 'btn-secondary' if not status_filter else 'btn-outline-secondary' }}">

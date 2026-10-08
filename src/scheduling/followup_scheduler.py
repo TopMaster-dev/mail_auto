@@ -50,7 +50,7 @@ class FollowupScheduler:
     """
 
     def __init__(self, *, sheets, gmail, wp, generator, scorer, company: dict,
-                 cfg: dict, checker=None):
+                 cfg: dict, checker=None, templates=None):
         self._sheets = sheets
         self._gmail = gmail
         self._wp = wp
@@ -60,6 +60,8 @@ class FollowupScheduler:
         # ContentChecker. Optional so tests can build a bare scheduler, but
         # production must pass one — see start().
         self._checker = checker
+        # TemplateStore, refreshed by the poller. None keeps the built-in text.
+        self._templates = templates
         self._steps = [int(s["days"]) for s in cfg.get("steps", [])]
         self._max = int(cfg.get("max_followups", 2))
         self._interval = int(cfg.get("scan_interval_minutes", 30))
@@ -130,7 +132,18 @@ class FollowupScheduler:
         intro, invitation, alt_intros = self._build_segments(inquiry, prop)
         ai_segments = [s for s in [intro, invitation,
                                    *(t for _, t in alt_intros)] if s and s.strip()]
-        assembler = EmailAssembler(self._company, is_business_hours())
+        assembler = EmailAssembler(self._company, is_business_hours(),
+                                   templates=self._templates)
+        # A broken 2nd/3rd template must not send the previous wording, and must
+        # not consume the scheduled slot either: leave 次回追客予定日 untouched so
+        # this retries once the sheet is fixed.
+        if self._templates is not None:
+            blocking = self._templates.blocking_errors(mail_type)
+            if blocking:
+                logger.error("%s template unusable — leaving %s scheduled: %s",
+                             mail_type, inquiry.id, "; ".join(blocking))
+                return
+
         build = (assembler.build_second_mail_parts if mail_type == "2nd"
                  else assembler.build_third_mail_parts)
         # 電話不在時パターン: only when the operator has recorded a call in 担当者メモ.

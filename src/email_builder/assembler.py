@@ -5,6 +5,7 @@ import re
 
 from src.core.models import Inquiry, Property
 from src.email_builder import followup_blocks as fb
+from src.email_builder import template_store as ts
 
 
 _SIGNATURE = """\
@@ -78,9 +79,49 @@ class EmailAssembler:
     All fixed sections (company info, URLs, signature) are never touched by AI.
     """
 
-    def __init__(self, company: dict, is_business_hours: bool):
+    def __init__(self, company: dict, is_business_hours: bool, templates=None):
         self._co = company
         self._in_hours = is_business_hours
+        # A TemplateStore, or None to always use the built-in text. `usable()`
+        # returns None for an unconfigured mail, which is the normal case until
+        # the client edits the sheet — a *broken* template never reaches here,
+        # because the caller refuses to send while blocking_errors() is non-empty.
+        self._templates = templates
+
+    def _rendered(self, kind: str, inquiry: Inquiry, property_intro: str,
+                  alt_intros: list[tuple[Property, str]]) -> tuple[str, str] | None:
+        """(subject, body) from the operator's template, or None to use built-in."""
+        if self._templates is None:
+            return None
+        tpl = self._templates.usable(kind)
+        if tpl is None:
+            return None
+        prop = inquiry.matched_property
+        ctx = {
+            "顧客名": inquiry.customer_name,
+            "物件名": inquiry.inquiry_property_name or (prop.name if prop else ""),
+            "物件URL": prop.url if prop else "",
+            "AI紹介文": property_intro,
+            "最寄駅": self._station_text(prop),
+            "担当者名": self._staff_name,
+            "署名": _SIGNATURE,
+            "物件情報": self._property_section(inquiry, property_intro, alt_intros),
+        }
+        return ts.render(tpl.subject, ctx), ts.render(tpl.body, ctx)
+
+    def _property_section(self, inquiry: Inquiry, property_intro: str,
+                          alt_intros: list[tuple[Property, str]]) -> str:
+        """The property part of the mail, in whichever shape the data requires."""
+        prop = inquiry.matched_property
+        if prop is not None and inquiry.is_vacant:
+            commission = ("\n※弊社でのご成約の場合、仲介手数料無料でご案内させていただいております。\n"
+                          if prop.is_commission_free else "")
+            return (f"◆お問い合わせ物件\n"
+                    f"物件名：{inquiry.inquiry_property_name or prop.name}\n"
+                    f"{prop.url}\n"
+                    f"{_INITIAL_COST_NOTE}{commission}\n\n"
+                    f"{property_intro}")
+        return self._alt_section(alt_intros)
 
     def build_first_mail_parts(
         self,
@@ -90,6 +131,9 @@ class EmailAssembler:
         alt_intros: list[tuple[Property, str]],
     ) -> tuple[str, str]:
         """Return (subject, plain_body). Plain body is what the operator reviews/edits."""
+        rendered = self._rendered(ts.FIRST, inquiry, property_intro, alt_intros)
+        if rendered is not None:
+            return rendered
         subject = f"【{inquiry.inquiry_property_name}】お問い合わせありがとうございます"
         return subject, self._select_body(
             inquiry, property_intro, visit_invitation, alt_intros)
@@ -145,6 +189,10 @@ class EmailAssembler:
         viewing, the 3rd shifts towards comparing similar rooms. Everything
         after that is shared.
         """
+        rendered = self._rendered(kind, inquiry, property_intro, alt_intros)
+        if rendered is not None:
+            return rendered
+
         name = inquiry.inquiry_property_name
         subject = f"【{name}】先日はお問い合わせありがとうございます！"
 
@@ -192,19 +240,25 @@ class EmailAssembler:
         return f"{customer_name}様"
 
     @staticmethod
-    def _station_line(prop: Property | None) -> str:
-        """`名鉄本線「牛田」徒歩20分` -> the 【最寄駅】 line of the template."""
+    def _station_text(prop: Property | None) -> str:
+        """`名鉄本線「牛田」徒歩20分` -> `名鉄本線「牛田」`, with no label."""
         if prop is None:
             return ""
-        source = prop.access or ""
-        m = re.search(r"([^「\r\n]+)「([^」]+)」", source)
+        m = re.search(r"([^「\r\n]+)「([^」]+)」", prop.access or "")
         if m:
-            return fb.NEAREST_STATION.format(line=m.group(1).strip(),
-                                             station=m.group(2).strip())
+            return f"{m.group(1).strip()}「{m.group(2).strip()}」"
         if prop.train_line:
-            return fb.NEAREST_STATION.format(line=prop.train_line,
-                                             station=prop.nearest_station or "")
+            return f"{prop.train_line}「{prop.nearest_station or ''}」"
         return ""
+
+    @classmethod
+    def _station_line(cls, prop: Property | None) -> str:
+        """The 【最寄駅】 line of the built-in template."""
+        text = cls._station_text(prop)
+        if not text:
+            return ""
+        line, _, station = text.partition("「")
+        return fb.NEAREST_STATION.format(line=line, station=station.rstrip("」"))
 
     def _alt_section(self, alt_intros: list[tuple[Property, str]]) -> str:
         """Alternatives block for a follow-up when the room is unavailable."""

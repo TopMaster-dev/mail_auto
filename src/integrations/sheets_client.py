@@ -166,6 +166,11 @@ class SheetsClient:
 
     # ── NG word management ──────────────────────────────────────────────────
 
+    def read_templates(self) -> list[dict]:
+        """Operator-edited mail templates: {"テンプレート名": ..., "内容": ...}."""
+        return [r for r in self._records(self._ws("templates"))
+                if str(r.get("テンプレート名", "")).strip()]
+
     def read_ng_words(self) -> list[dict]:
         """Return list of {"word": str, "category": str}."""
         return [r for r in self._records(self._ws("ng_words")) if r.get("ワード")]
@@ -228,6 +233,37 @@ class SheetsClient:
                 # before comparing — `.strip()` on a bool used to raise here.
                 conditions[key] = str(r.get("値", "")).strip().lower() == "true"
         return conditions
+
+    def read_config_value(self, key: str) -> str:
+        """One raw 設定 value, or "" when absent or unreadable."""
+        try:
+            for r in self._records(self._ws("config")):
+                if str(r.get("設定キー", "")).strip() == key:
+                    return str(r.get("値", "")).strip()
+        except Exception:
+            logger.exception("Could not read 設定 key %s", key)
+        return ""
+
+    def set_config(self, key: str, value: str, note: str = "") -> None:
+        """Upsert one 設定 row.
+
+        Used by the poller to publish template health, so the admin panel can
+        show it without re-running the checks itself — the panel has no Claude
+        client, and would otherwise miss NG-word problems entirely.
+        """
+        ws = self._ws("config")
+        try:
+            keys = self._retry(lambda: ws.col_values(1))
+        except Exception:
+            logger.exception("Could not read 設定 keys to write %s", key)
+            return
+        value = str(value)[:_MAX_CELL_CHARS]
+        if key in keys:
+            row = keys.index(key) + 1
+            self._retry(lambda: ws.update_cell(row, 2, value))
+        else:
+            self._retry(lambda: ws.append_row([key, value, note],
+                                              value_input_option="RAW"))
 
     # ── lookup helpers for reply detection ─────────────────────────────────
 

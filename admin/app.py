@@ -280,9 +280,15 @@ def create_app(cfg: dict | None = None, *, sheets=None, gmail=None) -> Flask:
         if status_filter:
             records = [r for r in records
                        if str(r.get("ステータス", "")).strip() == status_filter]
+        # Published by the poller, which is the only process with a content
+        # checker — validating here would miss NG words entirely.
+        template_status = sheets.read_config_value("テンプレート状態")
+        template_error = (template_status
+                          if template_status and template_status != "正常" else "")
         return render_template("dashboard.html", records=records,
                                status_filter=status_filter,
-                               status_order=STATUS_ORDER, counts=counts)
+                               status_order=STATUS_ORDER, counts=counts,
+                               template_error=template_error)
 
     # ── inquiry detail ───────────────────────────────────────────────────────
     @app.route("/inquiry/<iid>")

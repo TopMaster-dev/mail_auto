@@ -8,6 +8,7 @@ from src.ai.content_checker import ContentChecker
 from src.ai.draft_generator import DraftGenerator
 from src.core.models import Inquiry, Property
 from src.core.reflection import Reflection, identify
+from src.email_builder import template_store as ts
 from src.email_builder.assembler import EmailAssembler
 from src.email_builder.send_gate import (
     GATE_AUTO, GATE_BLOCKED, GATE_CONFIRM, SendGate, is_business_hours
@@ -70,6 +71,7 @@ class InquiryProcessor:
         company: dict,
         followup_cfg: dict | None = None,
         wp_refresh_minutes: int = 30,
+        templates=None,
     ):
         self._gmail = gmail
         self._sheets = sheets
@@ -80,6 +82,8 @@ class InquiryProcessor:
         self._gate = gate
         self._company = company
         self._wp_refresh_minutes = int(wp_refresh_minutes)
+        self._templates = templates
+        self._last_template_status = None
         followup_cfg = followup_cfg or {}
         self._followup_enabled = followup_cfg.get("enabled", False)
         steps = followup_cfg.get("steps", [{"days": 2}])
@@ -97,6 +101,14 @@ class InquiryProcessor:
         except Exception as e:
             logger.error("Could not load NG words (%s) — skipping this cycle so "
                          "no mail is processed unscreened", e)
+            return
+
+        if not self._templates_ready():
+            # Stop before reading any mail. Nothing is recorded and nothing is
+            # sent, so fixing the sheet is the entire repair: the next cycle
+            # picks these reflections up from the mailbox as usual. The client
+            # chose this over silently reverting to the built-in wording, which
+            # they would have had no way to notice (2026-10-07).
             return
 
         self._refresh_listings()
@@ -127,6 +139,37 @@ class InquiryProcessor:
                                  raw.get("uid"), e)
 
         logger.info("─── Poll cycle end ───")
+
+    TEMPLATE_STATUS_KEY = "テンプレート状態"
+    _TEMPLATE_OK = "正常"
+
+    def _templates_ready(self) -> bool:
+        """Re-read the templates and publish their health. False stops the cycle.
+
+        Only the 1st mail gates ingestion — a broken 2nd template must not stop
+        new inquiries being answered. Follow-ups check their own kind before
+        sending.
+        """
+        if self._templates is None:
+            return True
+        self._templates.refresh()
+        errors = self._templates.all_errors()
+        status = self._TEMPLATE_OK
+        if errors:
+            status = " / ".join(f"{kind}: {'; '.join(msgs)}"
+                                for kind, msgs in errors.items())
+        if status != self._last_template_status:
+            # Written only on change: the panel reads this, and rewriting an
+            # unchanged cell every five minutes is pointless Sheets traffic.
+            self._sheets.set_config(self.TEMPLATE_STATUS_KEY, status,
+                                    "メールテンプレートの検証結果（システムが自動更新）")
+            self._last_template_status = status
+        blocking = self._templates.blocking_errors(ts.FIRST)
+        if blocking:
+            logger.error("1st mail template is unusable — skipping this cycle: %s",
+                         "; ".join(blocking))
+            return False
+        return True
 
     def _refresh_listings(self) -> None:
         """Re-read WordPress when the cached listings have aged out.
@@ -477,7 +520,8 @@ class InquiryProcessor:
                     inquiry.matched_property or alt, alt)
                 alt_intros.append((alt, alt_text))
 
-        assembler = EmailAssembler(self._company, is_business_hours())
+        assembler = EmailAssembler(self._company, is_business_hours(),
+                                   templates=self._templates)
         subject, body_plain = assembler.build_first_mail_parts(
             inquiry, intro, invitation, alt_intros)
         ai_segments = [s for s in [intro, invitation,

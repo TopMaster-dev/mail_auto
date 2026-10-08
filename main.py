@@ -114,6 +114,7 @@ def build_processor(cfg: dict):
     from src.ai.draft_generator import DraftGenerator
     from src.core.inquiry_processor import InquiryProcessor
     from src.email_builder.send_gate import SendGate
+    from src.email_builder.template_store import TemplateStore
     from src.integrations.gmail_client import GmailClient
     from src.integrations.sheets_client import SheetsClient
     from src.integrations.wp_client import WordPressClient
@@ -161,6 +162,11 @@ def build_processor(cfg: dict):
     properties = wp.load_all()
     scorer = PropertyScorer(properties)
 
+    # Operator-editable mail templates. Refreshed each poll cycle by the
+    # processor, and shared with the follow-up scheduler so both see one view.
+    templates = TemplateStore(sheets, checker=checker)
+    templates.refresh()
+
     gate = SendGate(
         global_require_confirmation=cfg["send"]["all_require_confirmation"],
     )
@@ -177,6 +183,7 @@ def build_processor(cfg: dict):
         company=cfg["company"],
         followup_cfg=followup_cfg,
         wp_refresh_minutes=cfg["wordpress"].get("refresh_minutes", 30),
+        templates=templates,
     )
 
     scheduler = None
@@ -184,7 +191,7 @@ def build_processor(cfg: dict):
         scheduler = FollowupScheduler(
             sheets=sheets, gmail=gmail, wp=wp, generator=generator,
             scorer=scorer, company=cfg["company"], cfg=followup_cfg,
-            checker=checker,
+            checker=checker, templates=templates,
         )
 
     return processor, cfg["gmail"]["poll_interval_seconds"], scheduler
