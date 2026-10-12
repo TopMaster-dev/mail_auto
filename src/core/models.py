@@ -60,6 +60,12 @@ class Property:
 class NGHit:
     word: str
     category: str
+    # 強制停止: the word alone holds the mail. 文脈判定: the word is recorded but
+    # only holds the mail if the AI also judges the context a problem — 審査 or
+    # 折り返し appear in perfectly ordinary enquiries, and blocking on the word
+    # alone stopped those. Defaults to 強制停止 so an unmarked word is as strict
+    # as before the column existed.
+    mode: str = "強制停止"
 
 
 @dataclass

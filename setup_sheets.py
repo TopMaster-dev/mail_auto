@@ -39,7 +39,7 @@ _SCOPES = [
 # Header rows for every tab (keys match settings.yaml → sheets.names)
 _HEADERS: dict[str, list[str]] = {
     "inquiries": Inquiry.sheets_headers(),
-    "ng_words": ["ワード", "カテゴリ"],
+    "ng_words": ["ワード", "カテゴリ", "適用段階", "判定方式"],
     "templates": ["テンプレート名", "内容"],
     "send_log": ["送信日時", "問い合わせID", "宛先", "件名", "Message-ID", "メール種別",
                  "本文"],

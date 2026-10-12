@@ -35,6 +35,15 @@ STAGE_FOLLOWUP = "followup"
 STAGE_ALL = "初回から"
 STAGE_FOLLOWUP_ONLY = "2通目以降"
 
+# 判定方式 — how a matched word is acted on.
+# 強制停止 holds the mail on the word alone. 文脈判定 records the word but leaves
+# the decision to the AI's reading of the surrounding text: 審査, 保証会社, 解約,
+# 至急, 折り返し all occur in entirely ordinary enquiries, and stopping on the word
+# alone meant routine questions waited for a person. Blank means 強制停止, so a
+# sheet nobody has edited behaves exactly as it did before this column existed.
+MODE_FORCE = "強制停止"
+MODE_CONTEXT = "文脈判定"
+
 _DISC_SYSTEM = "あなたは不動産業務の法令遵守チェッカーです。指定されたJSON形式のみで回答してください。"
 
 _DISC_PROMPT = """\
@@ -86,16 +95,24 @@ class ContentChecker:
         Cost words are set that way: asking the price is a routine first
         enquiry, but the client wants a person involved before we chase
         someone about money a second and third time.
+
+        The 判定方式 column decides whether a match holds the mail by itself
+        (強制停止) or only when the AI also reads the context as a problem
+        (文脈判定). Anything unmarked is 強制停止.
         """
         self._ng_words = [
             {"word": unicodedata.normalize("NFKC", w["ワード"]),
              "category": w.get("カテゴリ", "その他"),
-             "stage": str(w.get("適用段階", "") or STAGE_ALL).strip()}
+             "stage": str(w.get("適用段階", "") or STAGE_ALL).strip(),
+             "mode": (MODE_CONTEXT
+                      if str(w.get("判定方式", "")).strip() == MODE_CONTEXT
+                      else MODE_FORCE)}
             for w in ng_words if w.get("ワード")
         ]
         followup_only = sum(1 for w in self._ng_words if w["stage"] == STAGE_FOLLOWUP_ONLY)
-        logger.debug("Loaded %d NG words (%d follow-up only)",
-                     len(self._ng_words), followup_only)
+        contextual = sum(1 for w in self._ng_words if w["mode"] == MODE_CONTEXT)
+        logger.debug("Loaded %d NG words (%d follow-up only, %d context-judged)",
+                     len(self._ng_words), followup_only, contextual)
 
     def check(self, text: str, stage: str = STAGE_INITIAL) -> CheckResult:
         """
@@ -109,8 +126,14 @@ class ContentChecker:
         ng_hits = self._scan_ng(normalized, stage)
         disc, disc_reason, complaint, complaint_reason = self._check_context(text)
 
+        # Only 強制停止 matches hold the mail by themselves. 文脈判定 matches are
+        # still reported — the operator should see that 審査 was present and that
+        # the AI read it as a routine question — but on their own they no longer
+        # stop a reply. The AI's own judgements still do.
+        forced = [h for h in ng_hits if h.mode == MODE_FORCE]
+
         return CheckResult(
-            is_clean=not ng_hits and not disc and not complaint,
+            is_clean=not forced and not disc and not complaint,
             ng_hits=ng_hits,
             discriminatory=disc,
             discriminatory_reason=disc_reason,
@@ -149,7 +172,8 @@ class ContentChecker:
                 continue
             word_norm = entry["word"]
             if word_norm in normalized_text and word_norm not in seen:
-                hits.append(NGHit(word=entry["word"], category=entry["category"]))
+                hits.append(NGHit(word=entry["word"], category=entry["category"],
+                                  mode=entry.get("mode", MODE_FORCE)))
                 seen.add(word_norm)
         if hits:
             logger.info("NG words found: %s", [h.word for h in hits])
