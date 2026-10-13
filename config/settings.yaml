@@ -22,6 +22,7 @@ sheets:
     followup_log: "追客履歴"
     review_log: "要確認履歴"
     config: "設定"
+    suppression: "配信停止"
 
 wordpress:
   base_url: "${WP_BASE_URL}"

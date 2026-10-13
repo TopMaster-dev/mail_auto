@@ -1,5 +1,6 @@
 from __future__ import annotations
 import logging
+import unicodedata
 import re
 import uuid
 from datetime import datetime, timedelta
@@ -20,6 +21,17 @@ from src.matching import area, portal_matcher
 from src.matching.property_scorer import PropertyScorer
 
 logger = logging.getLogger(__name__)
+
+# Explicit phrases only. 「不要」 alone appears in ordinary replies (「保証人は不要
+# ですか」), and mistaking that for an opt-out would silently cut off a live lead.
+_OPT_OUT_PHRASES = ("配信停止", "配信不要", "配信を停止", "送信停止", "停止希望",
+                    "今後の連絡は不要", "連絡不要", "unsubscribe")
+
+
+def _is_opt_out(body: str) -> bool:
+    """Is this reply asking us to stop mailing?"""
+    text = unicodedata.normalize("NFKC", str(body or "")).lower()
+    return any(p.lower() in text for p in _OPT_OUT_PHRASES)
 
 # imap_tools yields a 1900-01-01 sentinel when the Date header is missing or
 # unparseable. It is truthy, so it used to be stored verbatim.
@@ -84,6 +96,9 @@ class InquiryProcessor:
         self._wp_refresh_minutes = int(wp_refresh_minutes)
         self._templates = templates
         self._last_template_status = None
+        # Refreshed once per cycle; added to immediately when an opt-out arrives
+        # so a later mail in the same batch already sees it.
+        self._suppressed: set[str] = set()
         followup_cfg = followup_cfg or {}
         self._followup_enabled = followup_cfg.get("enabled", False)
         steps = followup_cfg.get("steps", [{"days": 2}])
@@ -109,6 +124,15 @@ class InquiryProcessor:
             # picks these reflections up from the mailbox as usual. The client
             # chose this over silently reverting to the built-in wording, which
             # they would have had no way to notice (2026-10-07).
+            return
+
+        try:
+            self._suppressed = self._sheets.read_suppressed()
+        except Exception:
+            # Fail closed would mean mailing nobody; fail open would mean mailing
+            # someone who asked us to stop. Neither is acceptable, so skip the
+            # cycle: the mail stays unread and is picked up once Sheets recovers.
+            logger.exception("Could not read the suppression list — skipping cycle")
             return
 
         self._refresh_listings()
@@ -210,6 +234,9 @@ class InquiryProcessor:
             self._sheets.write_review_log(
                 iid, "前回の処理が中断されました（要手動確認）", "")
 
+    def _is_suppressed(self, email: str) -> bool:
+        return bool(email) and email.strip().lower() in self._suppressed
+
     def _already_marked_replied(self, inquiry_id: str) -> bool:
         """Has this inquiry already been recorded as replied-to?"""
         try:
@@ -233,6 +260,15 @@ class InquiryProcessor:
                 # Acting is guarded separately: the mailbox is now re-scanned in
                 # full every cycle, so the same reply is seen over and over and
                 # would otherwise rewrite the row and re-log every few minutes.
+                # An opt-out must outlive this inquiry. Stopping the follow-up
+                # alone would let the same person start a fresh sequence by
+                # enquiring about another property, after asking us to stop.
+                if _is_opt_out(raw.get("body", "")):
+                    sender = (raw.get("from_addr") or "").strip()
+                    if sender:
+                        self._sheets.add_suppressed(sender, "お客様からの配信停止希望")
+                        self._suppressed.add(sender.lower())
+
                 if not self._already_marked_replied(orig_id):
                     self._sheets.update_status(orig_id, "返信あり")
                     self._sheets.stop_followup(orig_id)
@@ -265,6 +301,16 @@ class InquiryProcessor:
 
         # ── Step 3: write initial row ────────────────────────────────────────
         self._sheets.write_inquiry(inquiry)
+
+        # Asked us to stop. Record the enquiry so staff can see it arrived, but
+        # write no draft: a draft on screen invites someone to press send.
+        if self._is_suppressed(inquiry.customer_email):
+            logger.info("Inquiry %s is from a suppressed address → 配信停止",
+                        inquiry.id)
+            self._sheets.update_status(inquiry.id, "配信停止")
+            self._sheets.write_review_log(
+                inquiry.id, "配信停止をご希望のお客様のため送信しません", "")
+            return
 
         # No reply address means nothing downstream can succeed — bail out before
         # spending any Claude calls on a draft that could never be sent.

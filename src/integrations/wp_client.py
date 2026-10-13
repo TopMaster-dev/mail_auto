@@ -22,6 +22,49 @@ _ROOM_SUFFIX = re.compile(r"\d+$")
 _ROOM_IN_NAME = re.compile(r"(\d+)$")
 
 
+# 取引態様 lives inside the free-text 備考 (acf.note), under 【その他】, as one item
+# in a ／-separated line: 「普通借家契約／契約期間2年／取引態様：一般」.
+_DEAL_TYPE = re.compile(r"取引態様[\s]*[:：]?[\s]*([^\r\n／/、]*)")
+
+# 宅建業法第34条 requires the 売主・代理・媒介 distinction. 一般/専任/専属専任 is the
+# kind of 媒介契約 on top of that, so it is included only where the record names
+# exactly one. 「仲介」 and combinations like 「一般・専任」 still identify the agency
+# relationship unambiguously, and fall back to plain 媒介 rather than being
+# dropped — stating less is accurate, stating the wrong kind is not.
+_DEAL_TYPES = {
+    "一般": "媒介（一般）",
+    "専任": "媒介（専任）",
+    "専属専任": "媒介（専属専任）",
+    "専属専任媒介": "媒介（専属専任）",
+    "仲介": "媒介",
+    "媒介": "媒介",
+    "代理": "代理",
+    "貸主": "貸主",
+    "売主": "売主",
+}
+_BROKERAGE_WORDS = ("一般", "専任", "専属専任", "仲介", "媒介")
+
+
+def deal_type(note: str) -> str:
+    """`…／取引態様：一般` -> `媒介（一般）`. "" when nothing can be stated safely.
+
+    An unregistered or unreadable value yields "", and the caller omits the line
+    entirely: 第34条 is satisfied by saying nothing in a mail that then says
+    nothing about the 取引態様, but not by saying the wrong one.
+    """
+    m = _DEAL_TYPE.search(unicodedata.normalize("NFKC", str(note or "")))
+    if not m:
+        return ""
+    raw = m.group(1).strip()
+    if raw in _DEAL_TYPES:
+        return _DEAL_TYPES[raw]
+    # Several kinds listed, or a spelling not in the table: the agency
+    # relationship is still certain, only its exclusivity is not.
+    if any(w in raw for w in _BROKERAGE_WORDS):
+        return "媒介"
+    return ""
+
+
 def _room_key(text: str) -> str:
     """`0308` and `308` name the same room; compare them as one."""
     folded = unicodedata.normalize("NFKC", str(text or "")).strip().upper().replace(" ", "")
@@ -408,4 +451,5 @@ class WordPressClient:
             room_number=_room_number(acf.get("floor")),
             address=str(acf.get("location") or "").strip(),
             access=str(acf.get("access") or "").strip(),
+            deal_type=deal_type(acf.get("note")),
         )

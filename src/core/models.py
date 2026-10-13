@@ -50,6 +50,9 @@ class Property:
     room_number: str = ""      # acf.floor, e.g. 205（2階部分）-> 205
     address: str = ""          # acf.location (sparse)
     access: str = ""           # acf.access, carries 沿線「駅」徒歩N分
+    # 宅建業法第34条の取引態様。安全に断定できない場合は空のままとし、
+    # 誤った態様を表示するより記載しないことを選ぶ。
+    deal_type: str = ""
 
     @property
     def rent_total(self) -> int:

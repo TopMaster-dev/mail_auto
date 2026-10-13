@@ -118,7 +118,7 @@ class EmailAssembler:
                           if prop.is_commission_free else "")
             return (f"◆お問い合わせ物件\n"
                     f"物件名：{inquiry.inquiry_property_name or prop.name}\n"
-                    f"{prop.url}\n"
+                    f"{prop.url}{self._deal_line(prop)}\n"
                     f"{_INITIAL_COST_NOTE}{commission}\n\n"
                     f"{property_intro}")
         return self._alt_section(alt_intros)
@@ -211,7 +211,9 @@ class EmailAssembler:
         body = [self._header_name(inquiry.customer_name), opening, lead]
 
         if prop is not None and inquiry.is_vacant:
-            body += [fb.PROPERTY_BLOCK.format(name=name, url=prop.url), property_intro]
+            body += [fb.PROPERTY_BLOCK.format(name=name, url=prop.url,
+                                             deal=self._deal_line(prop)),
+                     property_intro]
         else:
             body.append(self._alt_section(alt_intros))
 
@@ -233,11 +235,19 @@ class EmailAssembler:
 
         if not self._in_hours:
             body.append(_OUT_OF_HOURS_NOTE)
+        body.append(fb.OPT_OUT)
         body.append(_SIGNATURE)
         return subject, _join_blocks(body)
 
     def _header_name(self, customer_name: str) -> str:
         return f"{customer_name}様"
+
+    @staticmethod
+    def _deal_line(prop: Property | None) -> str:
+        """The 取引態様 line, or "" when the listing does not state one."""
+        if prop is None or not prop.deal_type:
+            return ""
+        return fb.DEAL_TYPE_LINE.format(deal_type=prop.deal_type)
 
     @staticmethod
     def _station_text(prop: Property | None) -> str:
@@ -314,7 +324,7 @@ class EmailAssembler:
                 # is marketing copy and is not what the customer saw on the
                 # portal. Recommendations below keep their titles, as asked.
                 f"物件名：{inquiry.inquiry_property_name or prop.name}\n"
-                f"{prop.url}\n"
+                f"{prop.url}{self._deal_line(prop)}\n"
                 f"{_INITIAL_COST_NOTE}{commission}\n\n"
                 f"{property_intro}\n"
             )
@@ -330,6 +340,7 @@ class EmailAssembler:
             f"{inquiry.customer_name}様にピッタリなお部屋をしっかりとご紹介させて頂きます！\n"
             "ご返事お待ちしていますので、よろしくお願い申し上げます。",
             hours_note,
+            fb.OPT_OUT,
             _SIGNATURE,
         ])
 
@@ -363,6 +374,7 @@ class EmailAssembler:
             f"{inquiry.customer_name}様にピッタリなお部屋をしっかりとご紹介させて頂きます！\n"
             "ご返事お待ちしていますので、よろしくお願い申し上げます。",
             hours_note,
+            fb.OPT_OUT,
             _SIGNATURE,
         ])
 

@@ -124,9 +124,21 @@ PROPERTY_BLOCK = """\
 ◆お問い合わせ物件
 物件名：{name}
 
-{url}
+{url}{deal}
 
 ※上記URL内に初期費用を記載させていただきました"""
+
+# 宅建業法第34条. Omitted entirely when the listing records no 取引態様 we can
+# state with certainty — saying nothing is lawful, saying the wrong thing is not.
+DEAL_TYPE_LINE = "\n取引態様：{deal_type}"
+
+# 特定電子メール法第4条第2号. These mails carry campaign and membership links, so
+# they are 広告メール and must show how to refuse further ones. Reply-based, so
+# the refusal address is the sending address itself — and a reply already stops
+# the sequence, which makes the promise true the day it ships.
+OPT_OUT = """\
+※今後このようなご案内が不要な場合は、本メールへのご返信にて
+　「配信停止」とお知らせください。以後の送信を停止いたします。"""
 
 NEAREST_STATION = "【最寄駅】{line}「{station}」"
 

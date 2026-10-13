@@ -46,6 +46,7 @@ _HEADERS: dict[str, list[str]] = {
     "followup_log": ["日時", "問い合わせID", "追客種別", "結果"],
     "review_log": ["日時", "問い合わせID", "理由", "検出ワード"],
     "config": ["設定キー", "値", "説明"],
+    "suppression": ["メールアドレス", "登録日時", "理由"],
 }
 
 # Seed NGワード — starter set; the operator can edit freely in the sheet

@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 
 # Statuses the operator filters by, in display order
 STATUS_ORDER = ["自動送信可", "処理中", "処理中断", "要確認", "NG検出",
-                "送信済み", "返信あり"]
+                "送信済み", "返信あり", "配信停止"]
 
 
 class _AdminUser(UserMixin):
@@ -326,6 +326,19 @@ def create_app(cfg: dict | None = None, *, sheets=None, gmail=None) -> Flask:
         inq = Inquiry.from_sheets_record(rec)
         if not inq.customer_email:
             flash("送信先メールアドレスがありません。", "danger")
+            return redirect(url_for("inquiry_detail", iid=iid))
+
+        # The operator cannot be expected to remember who opted out, and the
+        # draft on screen gives no hint. Refuse rather than warn.
+        try:
+            suppressed = sheets.read_suppressed()
+        except Exception:
+            logger.exception("Could not read the suppression list for %s", iid)
+            flash("配信停止リストを確認できなかったため送信を中止しました。"
+                  "時間をおいて再度お試しください。", "danger")
+            return redirect(url_for("inquiry_detail", iid=iid))
+        if inq.customer_email.strip().lower() in suppressed:
+            flash("このお客様は配信停止をご希望のため送信できません。", "danger")
             return redirect(url_for("inquiry_detail", iid=iid))
 
         subject = request.form.get("subject", "").strip() or \

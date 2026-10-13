@@ -166,6 +166,31 @@ class SheetsClient:
 
     # ── NG word management ──────────────────────────────────────────────────
 
+    # ── 配信停止 (opt-out) ───────────────────────────────────────────────────
+
+    def read_suppressed(self) -> set[str]:
+        """Addresses that must never be mailed again, lower-cased.
+
+        Stopping the current follow-up is not enough: the same person enquiring
+        about another property would otherwise start a fresh sequence, having
+        already asked us to stop.
+        """
+        ws = self._ws("suppression")
+        values = self._retry(lambda: ws.col_values(1))
+        return {v.strip().lower() for v in values[1:] if v and v.strip()}
+
+    def add_suppressed(self, email: str, reason: str) -> None:
+        """Record an address as opted out. Safe to call for one already listed."""
+        email = (email or "").strip()
+        if not email:
+            return
+        if email.lower() in self.read_suppressed():
+            return
+        ws = self._ws("suppression")
+        row = [email, datetime.now().strftime("%Y-%m-%d %H:%M:%S"), reason]
+        self._retry(lambda: ws.append_row(row, value_input_option="RAW"))
+        logger.info("Added %s to the suppression list (%s)", email, reason)
+
     def read_templates(self) -> list[dict]:
         """Operator-edited mail templates: {"テンプレート名": ..., "内容": ...}."""
         return [r for r in self._records(self._ws("templates"))

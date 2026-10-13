@@ -124,6 +124,21 @@ class FollowupScheduler:
                 inquiry.id, inquiry.followup_count, None, "追客停止")
             return
 
+        # Asked us to stop, possibly via a different inquiry. Checked here as
+        # well as at intake because the opt-out may have arrived after this
+        # follow-up was scheduled.
+        try:
+            suppressed = self._sheets.read_suppressed()
+        except Exception:
+            logger.exception("Could not read the suppression list — not sending")
+            return
+        if inquiry.customer_email.strip().lower() in suppressed:
+            logger.info("Inquiry %s is suppressed — stopping follow-up", inquiry.id)
+            self._sheets.update_status(inquiry.id, "配信停止")
+            self._sheets.advance_followup(
+                inquiry.id, inquiry.followup_count, None, "追客停止")
+            return
+
         prop = self._resolve_property(inquiry)
         inquiry.matched_property = prop
         if inquiry.is_vacant is None and prop is not None:
